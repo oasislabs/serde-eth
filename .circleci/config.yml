@@ -1,0 +1,16 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: nhdh/rust:latest
+        environment:
+          PATH: /root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          RUSTC_WRAPPER: sccache
+    steps:
+      - checkout
+      - run:
+          name: Checkstyle
+          command: cargo fmt -- --check
+      - run:
+          name: Unit tests
+          command: cargo test --tests
