@@ -1,9 +1,11 @@
+use std::io;
+
+use serde::ser;
+
 use super::{
     error::{Error, Result},
     eth,
 };
-use serde::ser;
-use std::io;
 
 pub struct Serializer<W> {
     writer: W,

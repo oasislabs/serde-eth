@@ -1,5 +1,6 @@
-use serde::{de, ser};
 use std::{error, fmt, io, result};
+
+use serde::{de, ser};
 
 pub struct Error {
     err: Box<ErrorImpl>,
