@@ -18,18 +18,43 @@ pub(crate) fn encode_u64(value: u64) -> String {
     hex::encode(abi_encoded)
 }
 
-pub (crate) fn encode_bytes(value: &[u8]) -> String {
+pub(crate) fn encode_bytes(value: &[u8]) -> String {
     let abi_encoded = ethabi::encode(&[ethabi::Token::Bytes(value.into())]);
     hex::encode(abi_encoded)
 }
 
-pub (crate) fn encode_bytes_no_offset(value: &[u8]) -> String {
+pub(crate) struct DynamicSizedEncoding {
+    offset: String,
+    size: String,
+    content: String,
+}
+
+impl DynamicSizedEncoding {
+    pub(crate) fn offset(&self) -> &str {
+        &self.offset
+    }
+
+    pub(crate) fn size(&self) -> &str {
+        &self.size
+    }
+
+    pub(crate) fn content(&self) -> &str {
+        &self.content
+    }
+}
+
+pub (crate) fn encode_bytes_dynamic(value: &[u8]) -> DynamicSizedEncoding {
     let abi_encoded = ethabi::encode(&[ethabi::Token::Bytes(value.into())]);
     let hex_encoded = hex::encode(abi_encoded);
 
     // ignore head which is the offset set by default by ethabi
-    let (_, tail) = hex_encoded.split_at(64);
-    tail.to_string()
+    let (offset, tail) = hex_encoded.split_at(64);
+    let (size, content) = tail.split_at(64);
+    DynamicSizedEncoding {
+        offset: offset.to_string(),
+        size: size.to_string(),
+        content: content.to_string(),
+    }
 }
 
 /// Converts u64 to right aligned array of 32 bytes.
