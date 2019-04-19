@@ -1,6 +1,3 @@
-use ethabi;
-use hex;
-
 pub(crate) fn encode_bool(value: bool) -> String {
     let abi_encoded = ethabi::encode(&[ethabi::Token::Bool(value)]);
     hex::encode(abi_encoded)

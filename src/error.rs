@@ -139,7 +139,7 @@ impl ser::Error for Error {
 
 // Parse our own error message that looks like "{} at line {} column {}" to work
 // around erased-serde round-tripping the error through de::Error::custom.
-fn make_error(mut msg: String) -> Error {
+fn make_error(msg: String) -> Error {
     Error {
         err: Box::new(ErrorImpl {
             code: ErrorCode::Message(msg.into_boxed_str()),
