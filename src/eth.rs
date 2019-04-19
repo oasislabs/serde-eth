@@ -1,21 +1,35 @@
 use ethabi;
 use hex;
 
-pub fn encode_bool(value: bool) -> String {
+pub(crate) fn encode_bool(value: bool) -> String {
     let abi_encoded = ethabi::encode(&[ethabi::Token::Bool(value)]);
     hex::encode(abi_encoded)
 }
 
-pub fn encode_i64(value: i64) -> String {
+pub(crate) fn encode_i64(value: i64) -> String {
     let padded = pad_i64(value);
     let abi_encoded = ethabi::encode(&[ethabi::Token::Int(padded.into())]);
     hex::encode(abi_encoded)
 }
 
-pub fn encode_u64(value: u64) -> String {
+pub(crate) fn encode_u64(value: u64) -> String {
     let padded = pad_u64(value);
     let abi_encoded = ethabi::encode(&[ethabi::Token::Uint(padded.into())]);
     hex::encode(abi_encoded)
+}
+
+pub (crate) fn encode_bytes(value: &[u8]) -> String {
+    let abi_encoded = ethabi::encode(&[ethabi::Token::Bytes(value.into())]);
+    hex::encode(abi_encoded)
+}
+
+pub (crate) fn encode_bytes_no_offset(value: &[u8]) -> String {
+    let abi_encoded = ethabi::encode(&[ethabi::Token::Bytes(value.into())]);
+    let hex_encoded = hex::encode(abi_encoded);
+
+    // ignore head which is the offset set by default by ethabi
+    let (_, tail) = hex_encoded.split_at(64);
+    tail.to_string()
 }
 
 /// Converts u64 to right aligned array of 32 bytes.

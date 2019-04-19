@@ -85,39 +85,44 @@ where
             .map_err(Error::io)
     }
 
-    fn serialize_f32(self, v: f32) -> Result<Self::Ok> {
+    fn serialize_f32(self, _value: f32) -> Result<Self::Ok> {
         Err(Error::not_implemented())
     }
 
-    fn serialize_f64(self, v: f64) -> Result<Self::Ok> {
+    fn serialize_f64(self, _value: f64) -> Result<Self::Ok> {
         Err(Error::not_implemented())
     }
 
-    fn serialize_char(self, v: char) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+    fn serialize_char(self, value: char) -> Result<Self::Ok> {
+        let mut buf = [0; 4];
+        self.serialize_str(value.encode_utf8(&mut buf))
     }
 
-    fn serialize_str(self, v: &str) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+    fn serialize_str(self, value: &str) -> Result<Self::Ok> {
+        self.serialize_bytes(&value.to_string().into_bytes())
     }
 
-    fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+    fn serialize_bytes(self, value: &[u8]) -> Result<Self::Ok> {
+        let encoded = eth::encode_bytes(value);
+        self
+            .writer
+            .write_all(&encoded.into_bytes())
+            .map_err(Error::io)
     }
 
     fn serialize_none(self) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+        Ok(())
     }
 
     fn serialize_some<T: ?Sized>(self, value: &T) -> Result<Self::Ok>
     where
         T: ser::Serialize,
     {
-        Err(Error::not_implemented())
+        value.serialize(self)
     }
 
     fn serialize_unit(self) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+        Ok(())
     }
 
     fn serialize_unit_struct(
@@ -482,5 +487,107 @@ mod tests {
         test_encode_ok(tests);
     }
 
+    #[test]
+    fn test_write_u32() {
+        let tests = &[
+            (0x00000000 as u32, "0000000000000000000000000000000000000000000000000000000000000000"),
+            (0x01000000 as u32, "0000000000000000000000000000000000000000000000000000000001000000"),
+            (0x10000000 as u32, "0000000000000000000000000000000000000000000000000000000010000000"),
+            (0x80000000 as u32, "0000000000000000000000000000000000000000000000000000000080000000"),
+            (0xffffffff as u32, "00000000000000000000000000000000000000000000000000000000ffffffff"),
+        ];
+        test_encode_ok(tests);
+    }
 
+    #[allow(overflowing_literals)]
+    #[test]
+    fn test_write_i32() {
+        let tests = &[
+            (0x00000000 as i32, "0000000000000000000000000000000000000000000000000000000000000000"),
+            (0x01000000 as i32, "0000000000000000000000000000000000000000000000000000000001000000"),
+            (0x10000000 as i32, "0000000000000000000000000000000000000000000000000000000010000000"),
+            (0x80000000 as i32, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffff80000000"),
+            (0xffffffff as i32, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+        ];
+        test_encode_ok(tests);
+    }
+
+    #[test]
+    fn test_write_u64() {
+        let tests = &[
+            (0x0000000000000000 as u64, "0000000000000000000000000000000000000000000000000000000000000000"),
+            (0x0100000000000000 as u64, "0000000000000000000000000000000000000000000000000100000000000000"),
+            (0x1000000000000000 as u64, "0000000000000000000000000000000000000000000000001000000000000000"),
+            (0x8000000000000000 as u64, "0000000000000000000000000000000000000000000000008000000000000000"),
+            (0xffffffffffffffff as u64, "000000000000000000000000000000000000000000000000ffffffffffffffff"),
+        ];
+        test_encode_ok(tests);
+    }
+
+    #[allow(overflowing_literals)]
+    #[test]
+    fn test_write_i64() {
+        let tests = &[
+            (0x0000000000000000 as i64, "0000000000000000000000000000000000000000000000000000000000000000"),
+            (0x0100000000000000 as i64, "0000000000000000000000000000000000000000000000000100000000000000"),
+            (0x1000000000000000 as i64, "0000000000000000000000000000000000000000000000001000000000000000"),
+            (0x8000000000000000 as i64, "ffffffffffffffffffffffffffffffffffffffffffffffff8000000000000000"),
+            (0xffffffffffffffff as i64, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+        ];
+        test_encode_ok(tests);
+    }
+
+    #[test]
+    fn test_write_char() {
+        let tests = &[
+            ('a', "0000000000000000000000000000000000000000000000000000000000000020\
+                   0000000000000000000000000000000000000000000000000000000000000001\
+                   6100000000000000000000000000000000000000000000000000000000000000"),
+            ('é', "0000000000000000000000000000000000000000000000000000000000000020\
+                   0000000000000000000000000000000000000000000000000000000000000002\
+                   c3a9000000000000000000000000000000000000000000000000000000000000"),
+            ('ø', "0000000000000000000000000000000000000000000000000000000000000020\
+                   0000000000000000000000000000000000000000000000000000000000000002\
+                   c3b8000000000000000000000000000000000000000000000000000000000000"),
+        ];
+        test_encode_ok(tests);
+    }
+
+    #[test]
+    fn test_write_string() {
+        let tests = &[
+            ("hello", "0000000000000000000000000000000000000000000000000000000000000020\
+                       0000000000000000000000000000000000000000000000000000000000000005\
+                       68656c6c6f000000000000000000000000000000000000000000000000000000"),
+            ("",      "0000000000000000000000000000000000000000000000000000000000000020\
+                       0000000000000000000000000000000000000000000000000000000000000000"),
+            ("some long string that takes more than 32 bytes so we can see how eth abi \
+              encodes long strings",
+                      "0000000000000000000000000000000000000000000000000000000000000020\
+                       000000000000000000000000000000000000000000000000000000000000005d\
+                       736f6d65206c6f6e6720737472696e6720746861742074616b6573206d6f7265\
+                       207468616e20333220627974657320736f2077652063616e2073656520686f77\
+                       206574682061626920656e636f646573206c6f6e6720737472696e6773000000"),
+        ];
+        test_encode_ok(tests);
+    }
+
+    #[test]
+    fn test_write_option() {
+        let tests = &[
+            (None, ""),
+            (Some("hello"),  "0000000000000000000000000000000000000000000000000000000000000020\
+                              0000000000000000000000000000000000000000000000000000000000000005\
+                              68656c6c6f000000000000000000000000000000000000000000000000000000"),
+        ];
+        test_encode_ok(tests);
+    }
+
+    #[test]
+    fn test_write_unit() {
+        let tests = &[
+            ((), ""),
+        ];
+        test_encode_ok(tests);
+    }
 }
