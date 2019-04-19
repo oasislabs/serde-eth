@@ -1,5 +1,5 @@
-use serde::{ser, de};
-use std::{error, result, fmt, io};
+use serde::{de, ser};
+use std::{error, fmt, io, result};
 
 pub struct Error {
     err: Box<ErrorImpl>,
@@ -112,11 +112,7 @@ impl fmt::Display for ErrorImpl {
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Error: {:?}",
-            self.err.code.to_string(),
-        )
+        write!(f, "Error: {:?}", self.err.code.to_string(),)
     }
 }
 
