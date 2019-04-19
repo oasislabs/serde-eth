@@ -1,9 +1,11 @@
+use std::io;
+
+use serde::ser;
+
 use super::{
-    error::{Error, Result},
+    error::{SerdeEthError, Result},
     eth,
 };
-use serde::ser;
-use std::io;
 
 pub struct Serializer<W> {
     writer: W,
@@ -23,7 +25,7 @@ impl<W: io::Write> Serializer<W> {
 
 impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     type SerializeSeq = RootCompound<'a, W>;
     type SerializeTuple = RootCompound<'a, W>;
@@ -37,7 +39,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         let encoded = eth::encode_bool(value);
         self.writer
             .write_all(&encoded.into_bytes())
-            .map_err(Error::io)
+            .map_err(SerdeEthError::write_io)
     }
 
     fn serialize_i8(self, value: i8) -> Result<Self::Ok> {
@@ -56,7 +58,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         let encoded = eth::encode_i64(value);
         self.writer
             .write_all(&encoded.into_bytes())
-            .map_err(Error::io)
+            .map_err(SerdeEthError::write_io)
     }
 
     fn serialize_u8(self, value: u8) -> Result<Self::Ok> {
@@ -75,15 +77,15 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         let encoded = eth::encode_u64(value);
         self.writer
             .write_all(&encoded.into_bytes())
-            .map_err(Error::io)
+            .map_err(SerdeEthError::write_io)
     }
 
     fn serialize_f32(self, _value: f32) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 
     fn serialize_f64(self, _value: f64) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 
     fn serialize_char(self, value: char) -> Result<Self::Ok> {
@@ -99,7 +101,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         let encoded = eth::encode_bytes(value);
         self.writer
             .write_all(&encoded.into_bytes())
-            .map_err(Error::io)
+            .map_err(SerdeEthError::write_io)
     }
 
     fn serialize_none(self) -> Result<Self::Ok> {
@@ -187,7 +189,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     }
 
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 
     fn serialize_struct(self, _: &'static str, len: usize) -> Result<Self::SerializeStruct> {
@@ -340,7 +342,7 @@ struct NodeCompound<'a> {
 
 impl<'a> ser::SerializeSeq for NodeCompound<'a> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_element<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
         value.serialize(&mut self.ser)
@@ -355,7 +357,7 @@ impl<'a> ser::SerializeSeq for NodeCompound<'a> {
 
 impl<'a> ser::SerializeTuple for NodeCompound<'a> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_element<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
         ser::SerializeSeq::serialize_element(self, value)
@@ -368,7 +370,7 @@ impl<'a> ser::SerializeTuple for NodeCompound<'a> {
 
 impl<'a> ser::SerializeTupleStruct for NodeCompound<'a> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_field<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
         ser::SerializeSeq::serialize_element(self, value)
@@ -381,7 +383,7 @@ impl<'a> ser::SerializeTupleStruct for NodeCompound<'a> {
 
 impl<'a> ser::SerializeTupleVariant for NodeCompound<'a> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_field<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
         ser::SerializeSeq::serialize_element(self, value)
@@ -394,24 +396,24 @@ impl<'a> ser::SerializeTupleVariant for NodeCompound<'a> {
 
 impl<'a> ser::SerializeMap for NodeCompound<'a> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_key<T: ?Sized + ser::Serialize>(&mut self, key: &T) -> Result<()> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 
     fn serialize_value<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 
     fn end(self) -> Result<()> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 }
 
 impl<'a> ser::SerializeStruct for NodeCompound<'a> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_field<T: ?Sized + ser::Serialize>(
         &mut self,
@@ -428,7 +430,7 @@ impl<'a> ser::SerializeStruct for NodeCompound<'a> {
 
 impl<'a> ser::SerializeStructVariant for NodeCompound<'a> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_field<T: ?Sized + ser::Serialize>(
         &mut self,
@@ -468,7 +470,7 @@ impl NodeSerializer {
 
 impl<'a> ser::Serializer for &'a mut NodeSerializer {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     type SerializeSeq = NodeCompound<'a>;
     type SerializeTuple = NodeCompound<'a>;
@@ -521,11 +523,11 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
     }
 
     fn serialize_f32(self, _value: f32) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 
     fn serialize_f64(self, _value: f64) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 
     fn serialize_char(self, value: char) -> Result<Self::Ok> {
@@ -632,7 +634,7 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
     }
 
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 
     fn serialize_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
@@ -665,7 +667,7 @@ pub struct RootCompound<'a, W: 'a> {
 
 impl<'a, W: io::Write> ser::SerializeSeq for RootCompound<'a, W> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_element<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
         value.serialize(&mut self.ser)
@@ -676,13 +678,13 @@ impl<'a, W: io::Write> ser::SerializeSeq for RootCompound<'a, W> {
         let encoded = node.serialize();
         self.writer
             .write_all(&encoded.into_bytes())
-            .map_err(Error::io)
+            .map_err(SerdeEthError::write_io)
     }
 }
 
 impl<'a, W: io::Write> ser::SerializeTuple for RootCompound<'a, W> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_element<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
         ser::SerializeSeq::serialize_element(self, value)
@@ -695,7 +697,7 @@ impl<'a, W: io::Write> ser::SerializeTuple for RootCompound<'a, W> {
 
 impl<'a, W: io::Write> ser::SerializeTupleStruct for RootCompound<'a, W> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_field<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
         ser::SerializeSeq::serialize_element(self, value)
@@ -708,7 +710,7 @@ impl<'a, W: io::Write> ser::SerializeTupleStruct for RootCompound<'a, W> {
 
 impl<'a, W: io::Write> ser::SerializeTupleVariant for RootCompound<'a, W> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_field<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
         ser::SerializeSeq::serialize_element(self, value)
@@ -721,24 +723,24 @@ impl<'a, W: io::Write> ser::SerializeTupleVariant for RootCompound<'a, W> {
 
 impl<'a, W: io::Write> ser::SerializeMap for RootCompound<'a, W> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_key<T: ?Sized + ser::Serialize>(&mut self, key: &T) -> Result<()> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 
     fn serialize_value<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 
     fn end(self) -> Result<()> {
-        Err(Error::not_implemented())
+        Err(SerdeEthError::NotImplemented)
     }
 }
 
 impl<'a, W: io::Write> ser::SerializeStruct for RootCompound<'a, W> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_field<T: ?Sized + ser::Serialize>(
         &mut self,
@@ -755,7 +757,7 @@ impl<'a, W: io::Write> ser::SerializeStruct for RootCompound<'a, W> {
 
 impl<'a, W: io::Write> ser::SerializeStructVariant for RootCompound<'a, W> {
     type Ok = ();
-    type Error = Error;
+    type Error = SerdeEthError;
 
     fn serialize_field<T: ?Sized + ser::Serialize>(
         &mut self,
