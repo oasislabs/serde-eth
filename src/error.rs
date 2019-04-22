@@ -87,7 +87,6 @@ impl error::Error for Error {
             ErrorCode::IO(ref err) => error::Error::description(err),
             ErrorCode::Message(ref str) => str,
             ErrorCode::NotImplemented => "not implemented",
-            _ => "Eth parse error",
         }
     }
 
