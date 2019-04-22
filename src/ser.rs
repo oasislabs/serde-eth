@@ -116,17 +116,22 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         Ok(())
     }
 
-    fn serialize_unit_struct(self, _: &'static str) -> Result<Self::Ok> {
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok> {
         self.serialize_unit()
     }
 
-    fn serialize_unit_variant(self, _: &'static str, _: u32, _: &'static str) -> Result<Self::Ok> {
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<Self::Ok> {
         self.serialize_unit()
     }
 
     fn serialize_newtype_struct<T: ?Sized + ser::Serialize>(
         self,
-        _: &'static str,
+        _name: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
         value.serialize(self)
@@ -134,9 +139,9 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     fn serialize_newtype_variant<T: ?Sized + ser::Serialize>(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
         value.serialize(self)
@@ -164,7 +169,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     fn serialize_tuple_struct(
         self,
-        _: &'static str,
+        _name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
@@ -176,9 +181,9 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     fn serialize_tuple_variant(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
         let root = Node::Tuple(Vec::with_capacity(len));
@@ -188,11 +193,11 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         })
     }
 
-    fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
         Err(Error::not_implemented())
     }
 
-    fn serialize_struct(self, _: &'static str, len: usize) -> Result<Self::SerializeStruct> {
+    fn serialize_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
         Ok(RootCompound {
             writer: &mut self.writer,
@@ -202,9 +207,9 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     fn serialize_struct_variant(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
@@ -398,11 +403,11 @@ impl<'a> ser::SerializeMap for NodeCompound<'a> {
     type Ok = ();
     type Error = Error;
 
-    fn serialize_key<T: ?Sized + ser::Serialize>(&mut self, key: &T) -> Result<()> {
+    fn serialize_key<T: ?Sized + ser::Serialize>(&mut self, _key: &T) -> Result<()> {
         Err(Error::not_implemented())
     }
 
-    fn serialize_value<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
+    fn serialize_value<T: ?Sized + ser::Serialize>(&mut self, _value: &T) -> Result<()> {
         Err(Error::not_implemented())
     }
 
@@ -417,7 +422,7 @@ impl<'a> ser::SerializeStruct for NodeCompound<'a> {
 
     fn serialize_field<T: ?Sized + ser::Serialize>(
         &mut self,
-        key: &'static str,
+        _key: &'static str,
         value: &T,
     ) -> Result<()> {
         ser::SerializeSeq::serialize_element(self, value)
@@ -434,7 +439,7 @@ impl<'a> ser::SerializeStructVariant for NodeCompound<'a> {
 
     fn serialize_field<T: ?Sized + ser::Serialize>(
         &mut self,
-        key: &'static str,
+        _key: &'static str,
         value: &T,
     ) -> Result<()> {
         ser::SerializeSeq::serialize_element(self, value)
@@ -459,9 +464,7 @@ impl NodeSerializer {
     fn into_inner(self) -> Node {
         self.root
     }
-}
 
-impl NodeSerializer {
     #[inline]
     fn push(&mut self, node: Node) {
         self.root.push(node)
@@ -561,17 +564,22 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
         Ok(())
     }
 
-    fn serialize_unit_struct(self, _: &'static str) -> Result<Self::Ok> {
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok> {
         self.serialize_unit()
     }
 
-    fn serialize_unit_variant(self, _: &'static str, _: u32, _: &'static str) -> Result<Self::Ok> {
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<Self::Ok> {
         self.serialize_unit()
     }
 
     fn serialize_newtype_struct<T: ?Sized + ser::Serialize>(
         self,
-        _: &'static str,
+        _name: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
         value.serialize(self)
@@ -579,9 +587,9 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
 
     fn serialize_newtype_variant<T: ?Sized + ser::Serialize>(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
         value.serialize(self)
@@ -609,7 +617,7 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
 
     fn serialize_tuple_struct(
         self,
-        _: &'static str,
+        _name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
@@ -621,9 +629,9 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
 
     fn serialize_tuple_variant(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
         let root = Node::Tuple(Vec::with_capacity(len));
@@ -633,11 +641,11 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
         })
     }
 
-    fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
         Err(Error::not_implemented())
     }
 
-    fn serialize_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
+    fn serialize_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
         Ok(NodeCompound {
             base: self,
@@ -647,9 +655,9 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
 
     fn serialize_struct_variant(
         self,
-        name: &'static str,
-        variant_index: u32,
-        variant: &'static str,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
@@ -725,11 +733,11 @@ impl<'a, W: io::Write> ser::SerializeMap for RootCompound<'a, W> {
     type Ok = ();
     type Error = Error;
 
-    fn serialize_key<T: ?Sized + ser::Serialize>(&mut self, key: &T) -> Result<()> {
+    fn serialize_key<T: ?Sized + ser::Serialize>(&mut self, _key: &T) -> Result<()> {
         Err(Error::not_implemented())
     }
 
-    fn serialize_value<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
+    fn serialize_value<T: ?Sized + ser::Serialize>(&mut self, _value: &T) -> Result<()> {
         Err(Error::not_implemented())
     }
 
@@ -744,7 +752,7 @@ impl<'a, W: io::Write> ser::SerializeStruct for RootCompound<'a, W> {
 
     fn serialize_field<T: ?Sized + ser::Serialize>(
         &mut self,
-        key: &'static str,
+        _key: &'static str,
         value: &T,
     ) -> Result<()> {
         ser::SerializeSeq::serialize_element(self, value)
@@ -761,7 +769,7 @@ impl<'a, W: io::Write> ser::SerializeStructVariant for RootCompound<'a, W> {
 
     fn serialize_field<T: ?Sized + ser::Serialize>(
         &mut self,
-        key: &'static str,
+        _key: &'static str,
         value: &T,
     ) -> Result<()> {
         ser::SerializeSeq::serialize_element(self, value)

@@ -21,12 +21,14 @@ pub(crate) fn encode_bytes(value: &[u8]) -> String {
 }
 
 pub(crate) struct DynamicSizedEncoding {
+    #[allow(dead_code)]
     offset: String,
     size: String,
     content: String,
 }
 
 impl DynamicSizedEncoding {
+    #[allow(dead_code)]
     pub(crate) fn offset(&self) -> &str {
         &self.offset
     }
