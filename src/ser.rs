@@ -789,7 +789,7 @@ pub fn to_writer<W: io::Write, T: ?Sized + ser::Serialize>(writer: W, value: &T)
 
 #[inline]
 pub fn to_vec<T: ?Sized + ser::Serialize>(value: &T) -> Result<Vec<u8>> {
-    let mut writer = Vec::with_capacity(128);
+    let mut writer = Vec::with_capacity(128); // pre-allocate to hold the expected size of deserialized value
     to_writer(&mut writer, value)?;
     Ok(writer)
 }
