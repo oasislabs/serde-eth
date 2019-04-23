@@ -47,6 +47,17 @@ pub(crate) fn decode_int(bytes: &[u8], size: usize) -> Result<i64, Error> {
     }
 }
 
+pub(crate) fn decode_bytes(bytes: &[u8], len: usize) -> Result<Vec<u8>, Error> {
+    let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
+    if len > decoded.len() {
+        return Err(Error::parsing(
+            "decoded bytes are smaller than the required length",
+        ));
+    }
+
+    Ok(decoded[..len].into())
+}
+
 pub(crate) fn encode_bool(value: bool) -> String {
     let abi_encoded = ethabi::encode(&[ethabi::Token::Bool(value)]);
     hex::encode(abi_encoded)

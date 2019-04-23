@@ -1,6 +1,6 @@
 use serde::de;
 
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
 use super::{
     error::{Category, Error, Result},
@@ -11,7 +11,7 @@ pub struct Deserializer<R> {
     read: R,
 }
 
-impl<R: Read> Deserializer<R> {
+impl<R: Read + Seek> Deserializer<R> {
     pub fn new(read: R) -> Self {
         Deserializer { read: read }
     }
@@ -27,7 +27,6 @@ impl<R: Read> Deserializer<R> {
             if read_bytes == 0 {
                 break;
             }
-
             total_read_bytes += read_bytes;
         }
 
@@ -50,9 +49,78 @@ impl<R: Read> Deserializer<R> {
             },
         }
     }
+
+    fn read_char(&mut self, scope_offset: u64) -> Result<char> {
+        let bytes = self.read_byte_array(scope_offset, true)?;
+        if bytes.len() > 4 {
+            return Err(Error::parsing(
+                "parsed char from byte array longer than 4 bytes",
+            ));
+        }
+
+        match std::str::from_utf8(&bytes[..]) {
+            Err(_) => Err(Error::parsing("parsed byte array cannot decode to a char")),
+            Ok(s) => match s.chars().next() {
+                Some(c) => Ok(c),
+                None => Err(Error::parsing("parsed byte array cannot decode to a char")),
+            },
+        }
+    }
+
+    fn read_str(&mut self, scope_offset: u64) -> Result<String> {
+        let bytes = self.read_byte_array(scope_offset, true)?;
+        match std::str::from_utf8(&bytes[..]) {
+            Err(_) => Err(Error::parsing("parsed byte array cannot decode to a char")),
+            Ok(s) => Ok(s.to_string()),
+        }
+    }
+
+    fn read_byte_array(&mut self, scope_offset: u64, consume_all: bool) -> Result<Vec<u8>> {
+        let bytes_offset = self.read_uint(64)?;
+        let offset = (bytes_offset - scope_offset) << 1;
+
+        self.read
+            .seek(SeekFrom::Current(offset as i64))
+            .map_err(Error::io)?;
+
+        let len = self.read_uint(64)?;
+        let read_bytes = len << 1;
+        // only read multiple of 64 bytes
+        let base = (read_bytes >> 6) << 6;
+        let remain = if read_bytes - base == 0 { 0 } else { 1 };
+        let read_len = base + (remain << 6);
+        let mut read_data = vec![0; read_len as usize];
+        self.must_read(&mut read_data[..])?;
+
+        let data = eth::decode_bytes(&read_data, len as usize)?;
+
+        // after reading the relevant data the reader need to seek back
+        // to the next available offset after the bytes that have been read
+
+        if !consume_all {
+            let seek_back_len = -((offset as i64) + (read_len as i64) + 64);
+            self.read
+                .seek(SeekFrom::Current(seek_back_len))
+                .map_err(Error::io)?;
+        }
+
+        Ok(data)
+    }
+
+    fn read_uint(&mut self, size: usize) -> Result<u64> {
+        let mut bytes = [0; 64];
+        self.must_read(&mut bytes)?;
+        eth::decode_uint(&bytes, size)
+    }
+
+    fn read_int(&mut self, size: usize) -> Result<i64> {
+        let mut bytes = [0; 64];
+        self.must_read(&mut bytes)?;
+        eth::decode_int(&bytes, size)
+    }
 }
 
-impl<'de, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
+impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> {
     type Error = Error;
 
     #[inline]
@@ -68,91 +136,79 @@ impl<'de, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     }
 
     fn deserialize_i8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let mut bytes = [0; 64];
-        self.must_read(&mut bytes)?;
-        let value = eth::decode_int(&bytes, 8)?;
+        let value = self.read_int(8)?;
         visitor.visit_i8(value as i8)
     }
 
     fn deserialize_i16<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let mut bytes = [0; 64];
-        self.must_read(&mut bytes)?;
-        let value = eth::decode_int(&bytes, 16)?;
+        let value = self.read_int(16)?;
         visitor.visit_i16(value as i16)
     }
 
     fn deserialize_i32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let mut bytes = [0; 64];
-        self.must_read(&mut bytes)?;
-        let value = eth::decode_int(&bytes, 32)?;
+        let value = self.read_int(32)?;
         visitor.visit_i32(value as i32)
     }
 
     fn deserialize_i64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let mut bytes = [0; 64];
-        self.must_read(&mut bytes)?;
-        let value = eth::decode_int(&bytes, 64)?;
+        let value = self.read_int(64)?;
         visitor.visit_i64(value as i64)
     }
 
     fn deserialize_u8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let mut bytes = [0; 64];
-        self.must_read(&mut bytes)?;
-        let value = eth::decode_uint(&bytes, 8)?;
+        let value = self.read_uint(8)?;
         visitor.visit_u8(value as u8)
     }
 
     fn deserialize_u16<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let mut bytes = [0; 64];
-        self.must_read(&mut bytes)?;
-        let value = eth::decode_uint(&bytes, 16)?;
+        let value = self.read_uint(16)?;
         visitor.visit_u16(value as u16)
     }
 
     fn deserialize_u32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let mut bytes = [0; 64];
-        self.must_read(&mut bytes)?;
-        let value = eth::decode_uint(&bytes, 32)?;
+        let value = self.read_uint(32)?;
         visitor.visit_u32(value as u32)
     }
 
     fn deserialize_u64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let mut bytes = [0; 64];
-        self.must_read(&mut bytes)?;
-        let value = eth::decode_uint(&bytes, 64)?;
+        let value = self.read_uint(64)?;
         visitor.visit_u64(value as u64)
     }
 
-    fn deserialize_f32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+    fn deserialize_f32<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
         Err(Error::not_implemented())
     }
 
-    fn deserialize_f64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+    fn deserialize_f64<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
         Err(Error::not_implemented())
     }
 
     fn deserialize_char<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        let c = self.read_char(32)?;
+        visitor.visit_char(c)
     }
 
     fn deserialize_str<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        let s = self.read_str(32)?;
+        visitor.visit_str(&s)
     }
 
     fn deserialize_string<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        let s = self.read_str(32)?;
+        visitor.visit_string(s)
     }
 
     fn deserialize_bytes<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        let b = self.read_byte_array(32, true)?;
+        visitor.visit_bytes(&b[..])
     }
 
     #[inline]
     fn deserialize_byte_buf<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        let b = self.read_byte_array(32, true)?;
+        visitor.visit_byte_buf(b)
     }
 
-    /// Parses a `null` as a None, and any other values as a `Some(...)`.
     #[inline]
     fn deserialize_option<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         Err(Error::not_implemented())
@@ -170,7 +226,6 @@ impl<'de, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
         Err(Error::not_implemented())
     }
 
-    /// Parses a newtype struct as the underlying value.
     #[inline]
     fn deserialize_newtype_struct<V: de::Visitor<'de>>(
         self,
@@ -231,7 +286,7 @@ impl<'de, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     }
 }
 
-pub fn from_reader<'de, R: Read, T: de::Deserialize<'de>>(read: R) -> Result<T> {
+pub fn from_reader<'de, R: Read + Seek, T: de::Deserialize<'de>>(read: R) -> Result<T> {
     let mut de = Deserializer::new(read);
     let value = de::Deserialize::deserialize(&mut de)?;
 
@@ -553,4 +608,58 @@ mod tests {
         test_parse_ok(tests);
     }
 
+    #[test]
+    fn test_parse_char() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 6100000000000000000000000000000000000000000000000000000000000000",
+                'a',
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000002\
+                 c3a9000000000000000000000000000000000000000000000000000000000000",
+                'é',
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000002\
+                 c3b8000000000000000000000000000000000000000000000000000000000000",
+                'ø',
+            ),
+        ];
+
+        test_parse_ok(tests);
+    }
+
+    #[test]
+    fn test_parse_string() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000005\
+                 68656c6c6f000000000000000000000000000000000000000000000000000000",
+                "hello".to_string(),
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000000",
+                "".to_string(),
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 000000000000000000000000000000000000000000000000000000000000005d\
+                 736f6d65206c6f6e6720737472696e6720746861742074616b6573206d6f7265\
+                 207468616e20333220627974657320736f2077652063616e2073656520686f77\
+                 206574682061626920656e636f646573206c6f6e6720737472696e6773000000",
+                "some long string that takes more than 32 bytes so we can see how eth abi \
+                 encodes long strings"
+                    .to_string(),
+            ),
+        ];
+
+        test_parse_ok(tests);
+    }
 }
