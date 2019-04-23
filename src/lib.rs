@@ -1,7 +1,5 @@
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+mod custom_ser;
+mod error;
+mod eth;
+pub mod ser;
+pub use ser::to_vec;
