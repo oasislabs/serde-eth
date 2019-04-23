@@ -20,7 +20,7 @@ impl SerializerType {
     }
 }
 
-pub struct HashSerializer {
+pub struct BasicEthSerializer {
     /// offset keeps track of the current position
     offset: i8,
 
@@ -28,24 +28,32 @@ pub struct HashSerializer {
     /// Use -1 for big endian arrays and 1 for little endian arrays
     offset_sign: i8,
 
+    /// serializer_type is the type of serializer to do
+    serializer_type: SerializerType,
+
     /// content that the serializer aggregates. Call `serialize` to
     /// have the hex serialization of the data
     content: [u8; 32],
 }
 
-impl HashSerializer {
+impl BasicEthSerializer {
     /// new_hash creates a new serializer for ethereum
     /// hash types. These are stored as u8 arrays with
     /// little endian byte order
     pub fn new_hash(len: usize) -> Self {
         if len != 20 && len != 32 {
-            panic!("HashSerializer only supports H160, H256")
+            panic!("BasicEthSerializer only supports H160, H256")
         }
 
-        HashSerializer {
+        BasicEthSerializer {
             offset: 32 - (len as i8),
-            content: [0; 32],
             offset_sign: 1,
+            serializer_type: if len == 20 {
+                SerializerType::H160
+            } else {
+                SerializerType::H256
+            },
+            content: [0; 32],
         }
     }
 
@@ -54,12 +62,13 @@ impl HashSerializer {
     /// big endian byte order
     pub fn new_uint(len: usize) -> Self {
         if len != 32 {
-            panic!("HashSerializer only supports U256")
+            panic!("BasicEthSerializer only supports U256")
         }
 
-        HashSerializer {
+        BasicEthSerializer {
             offset: 31,
             content: [0; 32],
+            serializer_type: SerializerType::U256,
             offset_sign: -1,
         }
     }
@@ -69,7 +78,7 @@ impl HashSerializer {
     }
 }
 
-impl<'a> ser::Serializer for &'a mut HashSerializer {
+impl<'a> ser::Serializer for &'a mut BasicEthSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -102,9 +111,14 @@ impl<'a> ser::Serializer for &'a mut HashSerializer {
     }
 
     fn serialize_u8(self, value: u8) -> Result<Self::Ok> {
-        self.content[self.offset as usize] = value;
-        self.offset += self.offset_sign;
-        Ok(())
+        match self.serializer_type {
+            SerializerType::U256 => panic!("received u8 when serializing U256"),
+            SerializerType::H256 | SerializerType::H160 => {
+                self.content[self.offset as usize] = value;
+                self.offset += self.offset_sign;
+                Ok(())
+            }
+        }
     }
 
     fn serialize_u16(self, _value: u16) -> Result<Self::Ok> {
@@ -116,22 +130,30 @@ impl<'a> ser::Serializer for &'a mut HashSerializer {
     }
 
     fn serialize_u64(self, value: u64) -> Result<Self::Ok> {
-        self.content[self.offset as usize] = (value & 0x00ff) as u8;
-        self.content[(self.offset + self.offset_sign) as usize] = ((value >> 8) & 0x00ff) as u8;
-        self.content[(self.offset + 2 * self.offset_sign) as usize] =
-            ((value >> 16) & 0x00ff) as u8;
-        self.content[(self.offset + 3 * self.offset_sign) as usize] =
-            ((value >> 24) & 0x00ff) as u8;
-        self.content[(self.offset + 4 * self.offset_sign) as usize] =
-            ((value >> 32) & 0x00ff) as u8;
-        self.content[(self.offset + 5 * self.offset_sign) as usize] =
-            ((value >> 40) & 0x00ff) as u8;
-        self.content[(self.offset + 6 * self.offset_sign) as usize] =
-            ((value >> 48) & 0x00ff) as u8;
-        self.content[(self.offset + 7 * self.offset_sign) as usize] =
-            ((value >> 56) & 0x00ff) as u8;
-        self.offset += 8 * self.offset_sign;
-        Ok(())
+        match self.serializer_type {
+            SerializerType::H256 | SerializerType::H160 => {
+                panic!("received u64 when serializing H256,H160")
+            }
+            SerializerType::U256 => {
+                self.content[self.offset as usize] = (value & 0x00ff) as u8;
+                self.content[(self.offset + self.offset_sign) as usize] =
+                    ((value >> 8) & 0x00ff) as u8;
+                self.content[(self.offset + 2 * self.offset_sign) as usize] =
+                    ((value >> 16) & 0x00ff) as u8;
+                self.content[(self.offset + 3 * self.offset_sign) as usize] =
+                    ((value >> 24) & 0x00ff) as u8;
+                self.content[(self.offset + 4 * self.offset_sign) as usize] =
+                    ((value >> 32) & 0x00ff) as u8;
+                self.content[(self.offset + 5 * self.offset_sign) as usize] =
+                    ((value >> 40) & 0x00ff) as u8;
+                self.content[(self.offset + 6 * self.offset_sign) as usize] =
+                    ((value >> 48) & 0x00ff) as u8;
+                self.content[(self.offset + 7 * self.offset_sign) as usize] =
+                    ((value >> 56) & 0x00ff) as u8;
+                self.offset += 8 * self.offset_sign;
+                Ok(())
+            }
+        }
     }
 
     fn serialize_f32(self, __value: f32) -> Result<Self::Ok> {
@@ -242,7 +264,7 @@ impl<'a> ser::Serializer for &'a mut HashSerializer {
     }
 }
 
-impl<'a> ser::SerializeSeq for &'a mut HashSerializer {
+impl<'a> ser::SerializeSeq for &'a mut BasicEthSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -255,7 +277,7 @@ impl<'a> ser::SerializeSeq for &'a mut HashSerializer {
     }
 }
 
-impl<'a> ser::SerializeTuple for &'a mut HashSerializer {
+impl<'a> ser::SerializeTuple for &'a mut BasicEthSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -268,7 +290,7 @@ impl<'a> ser::SerializeTuple for &'a mut HashSerializer {
     }
 }
 
-impl<'a> ser::SerializeTupleStruct for &'a mut HashSerializer {
+impl<'a> ser::SerializeTupleStruct for &'a mut BasicEthSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -281,7 +303,7 @@ impl<'a> ser::SerializeTupleStruct for &'a mut HashSerializer {
     }
 }
 
-impl<'a> ser::SerializeTupleVariant for &'a mut HashSerializer {
+impl<'a> ser::SerializeTupleVariant for &'a mut BasicEthSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -294,7 +316,7 @@ impl<'a> ser::SerializeTupleVariant for &'a mut HashSerializer {
     }
 }
 
-impl<'a> ser::SerializeMap for &'a mut HashSerializer {
+impl<'a> ser::SerializeMap for &'a mut BasicEthSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -311,7 +333,7 @@ impl<'a> ser::SerializeMap for &'a mut HashSerializer {
     }
 }
 
-impl<'a> ser::SerializeStruct for &'a mut HashSerializer {
+impl<'a> ser::SerializeStruct for &'a mut BasicEthSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -328,7 +350,7 @@ impl<'a> ser::SerializeStruct for &'a mut HashSerializer {
     }
 }
 
-impl<'a> ser::SerializeStructVariant for &'a mut HashSerializer {
+impl<'a> ser::SerializeStructVariant for &'a mut BasicEthSerializer {
     type Ok = ();
     type Error = Error;
 

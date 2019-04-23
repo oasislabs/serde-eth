@@ -174,15 +174,15 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
             Some(t) => match t {
                 custom_ser::SerializerType::H256 => Ok(RootCompound::BigInteger {
                     writer: self,
-                    ser: custom_ser::HashSerializer::new_hash(32),
+                    ser: custom_ser::BasicEthSerializer::new_hash(32),
                 }),
                 custom_ser::SerializerType::H160 => Ok(RootCompound::BigInteger {
                     writer: self,
-                    ser: custom_ser::HashSerializer::new_hash(20),
+                    ser: custom_ser::BasicEthSerializer::new_hash(20),
                 }),
                 custom_ser::SerializerType::U256 => Ok(RootCompound::BigInteger {
                     writer: self,
-                    ser: custom_ser::HashSerializer::new_uint(32),
+                    ser: custom_ser::BasicEthSerializer::new_uint(32),
                 }),
             },
             None => {
@@ -375,7 +375,7 @@ pub enum NodeCompound<'a> {
     },
     BigInteger {
         base: &'a mut NodeSerializer,
-        ser: custom_ser::HashSerializer,
+        ser: custom_ser::BasicEthSerializer,
     },
 }
 
@@ -667,15 +667,15 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
             Some(t) => match t {
                 custom_ser::SerializerType::H256 => Ok(NodeCompound::BigInteger {
                     base: self,
-                    ser: custom_ser::HashSerializer::new_hash(32),
+                    ser: custom_ser::BasicEthSerializer::new_hash(32),
                 }),
                 custom_ser::SerializerType::H160 => Ok(NodeCompound::BigInteger {
                     base: self,
-                    ser: custom_ser::HashSerializer::new_hash(20),
+                    ser: custom_ser::BasicEthSerializer::new_hash(20),
                 }),
                 custom_ser::SerializerType::U256 => Ok(NodeCompound::BigInteger {
                     base: self,
-                    ser: custom_ser::HashSerializer::new_uint(32),
+                    ser: custom_ser::BasicEthSerializer::new_uint(32),
                 }),
             },
             None => {
@@ -748,7 +748,7 @@ pub enum RootCompound<'a, W: 'a> {
     },
     BigInteger {
         writer: &'a mut Serializer<W>,
-        ser: custom_ser::HashSerializer,
+        ser: custom_ser::BasicEthSerializer,
     },
 }
 
@@ -1423,14 +1423,12 @@ mod tests {
 
     #[test]
     fn test_write_u8_fixed_seq() {
-        let tests = &[
-            (
-                [1 as u8; 3],
-                "0000000000000000000000000000000000000000000000000000000000000001\
-                 0000000000000000000000000000000000000000000000000000000000000001\
-                 0000000000000000000000000000000000000000000000000000000000000001",
-            ),
-        ];
+        let tests = &[(
+            [1 as u8; 3],
+            "0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000001",
+        )];
         test_encode_ok(tests);
     }
 
