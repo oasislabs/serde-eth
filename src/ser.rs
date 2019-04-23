@@ -893,7 +893,7 @@ pub fn to_string<T: ?Sized + ser::Serialize>(value: &T) -> Result<String> {
 mod tests {
 
     use super::to_string;
-    use oasis_std::types::{H160, H256, U256};
+    use oasis_std::types::{Address, H160, H256, U256};
     use serde::Serialize;
     use std::fmt::Debug;
 
@@ -989,6 +989,42 @@ mod tests {
             ),
             (
                 gen_h160(u64::max_value()),
+                "000000000000000000000000000000000000000000000000ffffffffffffffff",
+            ),
+        ];
+
+        test_encode_ok(tests);
+    }
+
+    #[test]
+    fn test_write_address() {
+        let tests = &[
+            (
+                gen_h160(0) as Address,
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                gen_h160(2) as Address,
+                "0000000000000000000000000000000000000000000000000000000000000002",
+            ),
+            (
+                gen_h160(15) as Address,
+                "000000000000000000000000000000000000000000000000000000000000000f",
+            ),
+            (
+                gen_h160(16) as Address,
+                "0000000000000000000000000000000000000000000000000000000000000010",
+            ),
+            (
+                gen_h160(1_000) as Address,
+                "00000000000000000000000000000000000000000000000000000000000003e8",
+            ),
+            (
+                gen_h160(100_000) as Address,
+                "00000000000000000000000000000000000000000000000000000000000186a0",
+            ),
+            (
+                gen_h160(u64::max_value()) as Address,
                 "000000000000000000000000000000000000000000000000ffffffffffffffff",
             ),
         ];
