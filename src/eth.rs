@@ -1,3 +1,52 @@
+use std::result::Result;
+
+use super::error::Error;
+
+pub(crate) fn decode_bool(bytes: &[u8]) -> Result<bool, Error> {
+    let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
+    let tokens =
+        ethabi::decode(&[ethabi::ParamType::Bool], &decoded[..]).map_err(Error::eth_parsing)?;
+    if tokens.len() != 1 {
+        return Err(Error::parsing("decoded unexpected number of tokens"));
+    }
+
+    let token = tokens.get(0).unwrap();
+    match token {
+        ethabi::Token::Bool(b) => Ok(*b),
+        _ => Err(Error::parsing("decoded unexpected type for boolean")),
+    }
+}
+
+pub(crate) fn decode_uint(bytes: &[u8], size: usize) -> Result<u64, Error> {
+    let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
+    let tokens = ethabi::decode(&[ethabi::ParamType::Uint(size)], &decoded[..])
+        .map_err(Error::eth_parsing)?;
+    if tokens.len() != 1 {
+        return Err(Error::parsing("decoded unexpected number of tokens"));
+    }
+
+    let token = tokens.get(0).unwrap();
+    match token {
+        ethabi::Token::Uint(v) => Ok(v.low_u64()),
+        _ => Err(Error::parsing("decoded unexpected type for uint")),
+    }
+}
+
+pub(crate) fn decode_int(bytes: &[u8], size: usize) -> Result<i64, Error> {
+    let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
+    let tokens = ethabi::decode(&[ethabi::ParamType::Int(size)], &decoded[..])
+        .map_err(Error::eth_parsing)?;
+    if tokens.len() != 1 {
+        return Err(Error::parsing("decoded unexpected number of tokens"));
+    }
+
+    let token = tokens.get(0).unwrap();
+    match token {
+        ethabi::Token::Int(v) => Ok(v.low_u64() as i64),
+        _ => Err(Error::parsing("decoded unexpected type for int")),
+    }
+}
+
 pub(crate) fn encode_bool(value: bool) -> String {
     let abi_encoded = ethabi::encode(&[ethabi::Token::Bool(value)]);
     hex::encode(abi_encoded)
