@@ -215,7 +215,7 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
     }
 
     fn deserialize_unit<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        visitor.visit_unit()
     }
 
     fn deserialize_unit_struct<V: de::Visitor<'de>>(
@@ -223,7 +223,7 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
         _name: &'static str,
         visitor: V,
     ) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        visitor.visit_unit()
     }
 
     #[inline]
