@@ -1,6 +1,6 @@
 use std::io;
 
-use serde::ser;
+use serde::ser::{self, SerializeSeq};
 
 use super::{
     custom_ser,
@@ -113,11 +113,14 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     }
 
     fn serialize_none(self) -> Result<Self::Ok> {
-        Ok(())
+        let serializer = self.serialize_seq(Some(0))?;
+        serializer.end()
     }
 
     fn serialize_some<T: ser::Serialize + ?Sized>(self, value: &T) -> Result<Self::Ok> {
-        value.serialize(self)
+        let mut serializer = self.serialize_seq(Some(1))?;
+        serializer.serialize_element(value)?;
+        serializer.end()
     }
 
     fn serialize_unit(self) -> Result<Self::Ok> {
@@ -606,11 +609,14 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
     }
 
     fn serialize_none(self) -> Result<Self::Ok> {
-        Ok(())
+        let serializer = self.serialize_seq(Some(0))?;
+        serializer.end()
     }
 
     fn serialize_some<T: ?Sized + ser::Serialize>(self, value: &T) -> Result<Self::Ok> {
-        value.serialize(self)
+        let mut serializer = self.serialize_seq(Some(1))?;
+        serializer.serialize_element(value)?;
+        serializer.end()
     }
 
     fn serialize_unit(self) -> Result<Self::Ok> {
@@ -1394,10 +1400,15 @@ mod tests {
     #[test]
     fn test_write_option() {
         let tests = &[
-            (None, ""),
+            (
+                None,
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000000"),
             (
                 Some("hello"),
                 "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 0000000000000000000000000000000000000000000000000000000000000020\
                  0000000000000000000000000000000000000000000000000000000000000005\
                  68656c6c6f000000000000000000000000000000000000000000000000000000",
             ),
