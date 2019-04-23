@@ -1,3 +1,4 @@
+mod custom_ser;
 mod error;
 mod eth;
 pub mod ser;

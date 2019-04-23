@@ -3,18 +3,32 @@ use std::io;
 use serde::ser;
 
 use super::{
+    custom_ser,
     error::{Error, Result},
     eth,
 };
 
 pub struct Serializer<W> {
     writer: W,
+
+    // current_custom_type is used to set the current state of any type whose serialization
+    // is implemented in the serializer.
+    current_custom_serializer: Option<custom_ser::SerializerType>,
 }
 
 impl<W: io::Write> Serializer<W> {
     #[inline]
     pub fn new(writer: W) -> Self {
-        Serializer { writer: writer }
+        Serializer {
+            writer: writer,
+            current_custom_serializer: None,
+        }
+    }
+
+    #[inline]
+    pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        self.current_custom_serializer = None;
+        self.writer.write_all(bytes).map_err(Error::io)
     }
 
     #[inline]
@@ -37,9 +51,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     fn serialize_bool(self, value: bool) -> Result<Self::Ok> {
         let encoded = eth::encode_bool(value);
-        self.writer
-            .write_all(&encoded.into_bytes())
-            .map_err(Error::io)
+        self.write(&encoded.into_bytes())
     }
 
     fn serialize_i8(self, value: i8) -> Result<Self::Ok> {
@@ -56,9 +68,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     fn serialize_i64(self, value: i64) -> Result<Self::Ok> {
         let encoded = eth::encode_i64(value);
-        self.writer
-            .write_all(&encoded.into_bytes())
-            .map_err(Error::io)
+        self.write(&encoded.into_bytes())
     }
 
     fn serialize_u8(self, value: u8) -> Result<Self::Ok> {
@@ -75,9 +85,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     fn serialize_u64(self, value: u64) -> Result<Self::Ok> {
         let encoded = eth::encode_u64(value);
-        self.writer
-            .write_all(&encoded.into_bytes())
-            .map_err(Error::io)
+        self.write(&encoded.into_bytes())
     }
 
     fn serialize_f32(self, _value: f32) -> Result<Self::Ok> {
@@ -131,19 +139,21 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     fn serialize_newtype_struct<T: ?Sized + ser::Serialize>(
         self,
-        _name: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
+        self.current_custom_serializer = custom_ser::SerializerType::get(name);
         value.serialize(self)
     }
 
     fn serialize_newtype_variant<T: ?Sized + ser::Serialize>(
         self,
-        _name: &'static str,
+        name: &'static str,
         _variant_index: u32,
         _variant: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
+        self.current_custom_serializer = custom_ser::SerializerType::get(name);
         value.serialize(self)
     }
 
@@ -153,18 +163,36 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
             None => Node::Seq(Vec::new()),
         };
 
-        Ok(RootCompound {
-            writer: &mut self.writer,
+        Ok(RootCompound::Standard {
+            writer: self,
             ser: NodeSerializer::new(root),
         })
     }
 
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple> {
-        let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(RootCompound {
-            writer: &mut self.writer,
-            ser: NodeSerializer::new(root),
-        })
+        match &self.current_custom_serializer {
+            Some(t) => match t {
+                custom_ser::SerializerType::H256 => Ok(RootCompound::BigInteger {
+                    writer: self,
+                    ser: custom_ser::HashSerializer::new_hash(32),
+                }),
+                custom_ser::SerializerType::H160 => Ok(RootCompound::BigInteger {
+                    writer: self,
+                    ser: custom_ser::HashSerializer::new_hash(20),
+                }),
+                custom_ser::SerializerType::U256 => Ok(RootCompound::BigInteger {
+                    writer: self,
+                    ser: custom_ser::HashSerializer::new_uint(32),
+                }),
+            },
+            None => {
+                let root = Node::Tuple(Vec::with_capacity(len));
+                Ok(RootCompound::Standard {
+                    writer: self,
+                    ser: NodeSerializer::new(root),
+                })
+            }
+        }
     }
 
     fn serialize_tuple_struct(
@@ -173,8 +201,8 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         len: usize,
     ) -> Result<Self::SerializeTupleStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(RootCompound {
-            writer: &mut self.writer,
+        Ok(RootCompound::Standard {
+            writer: self,
             ser: NodeSerializer::new(root),
         })
     }
@@ -187,8 +215,8 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
         let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(RootCompound {
-            writer: &mut self.writer,
+        Ok(RootCompound::Standard {
+            writer: self,
             ser: NodeSerializer::new(root),
         })
     }
@@ -199,8 +227,8 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
 
     fn serialize_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(RootCompound {
-            writer: &mut self.writer,
+        Ok(RootCompound::Standard {
+            writer: self,
             ser: NodeSerializer::new(root),
         })
     }
@@ -213,8 +241,8 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         len: usize,
     ) -> Result<Self::SerializeStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(RootCompound {
-            writer: &mut self.writer,
+        Ok(RootCompound::Standard {
+            writer: self,
             ser: NodeSerializer::new(root),
         })
     }
@@ -340,9 +368,15 @@ impl Node {
     }
 }
 
-struct NodeCompound<'a> {
-    base: &'a mut NodeSerializer,
-    ser: NodeSerializer,
+pub enum NodeCompound<'a> {
+    Standard {
+        base: &'a mut NodeSerializer,
+        ser: NodeSerializer,
+    },
+    BigInteger {
+        base: &'a mut NodeSerializer,
+        ser: custom_ser::HashSerializer,
+    },
 }
 
 impl<'a> ser::SerializeSeq for NodeCompound<'a> {
@@ -350,12 +384,23 @@ impl<'a> ser::SerializeSeq for NodeCompound<'a> {
     type Error = Error;
 
     fn serialize_element<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
-        value.serialize(&mut self.ser)
+        match self {
+            NodeCompound::Standard { base: _, ser } => value.serialize(ser),
+            NodeCompound::BigInteger { base: _, ser } => value.serialize(ser),
+        }
     }
 
     fn end(self) -> Result<()> {
-        let node = self.ser.into_inner();
-        self.base.push(node);
+        match self {
+            NodeCompound::Standard { base, ser } => {
+                let node = ser.into_inner();
+                base.push(node);
+            }
+            NodeCompound::BigInteger { base, ser } => {
+                base.push(Node::Fixed(ser.serialize()));
+            }
+        }
+
         Ok(())
     }
 }
@@ -450,14 +495,21 @@ impl<'a> ser::SerializeStructVariant for NodeCompound<'a> {
     }
 }
 
-struct NodeSerializer {
+pub struct NodeSerializer {
     root: Node,
+
+    // current_custom_type is used to set the current state of any type whose serialization
+    // is implemented in the serializer.
+    current_custom_serializer: Option<custom_ser::SerializerType>,
 }
 
 impl NodeSerializer {
     #[inline]
     fn new(node: Node) -> Self {
-        NodeSerializer { root: node }
+        NodeSerializer {
+            root: node,
+            current_custom_serializer: None,
+        }
     }
 
     #[inline]
@@ -467,7 +519,8 @@ impl NodeSerializer {
 
     #[inline]
     fn push(&mut self, node: Node) {
-        self.root.push(node)
+        self.current_custom_serializer = None;
+        self.root.push(node);
     }
 }
 
@@ -579,19 +632,21 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
 
     fn serialize_newtype_struct<T: ?Sized + ser::Serialize>(
         self,
-        _name: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
+        self.current_custom_serializer = custom_ser::SerializerType::get(name);
         value.serialize(self)
     }
 
     fn serialize_newtype_variant<T: ?Sized + ser::Serialize>(
         self,
-        _name: &'static str,
+        name: &'static str,
         _variant_index: u32,
         _variant: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
+        self.current_custom_serializer = custom_ser::SerializerType::get(name);
         value.serialize(self)
     }
 
@@ -601,18 +656,36 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
             None => Node::Seq(Vec::new()),
         };
 
-        Ok(NodeCompound {
+        Ok(NodeCompound::Standard {
             base: self,
             ser: NodeSerializer::new(root),
         })
     }
 
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple> {
-        let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(NodeCompound {
-            base: self,
-            ser: NodeSerializer::new(root),
-        })
+        match &self.current_custom_serializer {
+            Some(t) => match t {
+                custom_ser::SerializerType::H256 => Ok(NodeCompound::BigInteger {
+                    base: self,
+                    ser: custom_ser::HashSerializer::new_hash(32),
+                }),
+                custom_ser::SerializerType::H160 => Ok(NodeCompound::BigInteger {
+                    base: self,
+                    ser: custom_ser::HashSerializer::new_hash(20),
+                }),
+                custom_ser::SerializerType::U256 => Ok(NodeCompound::BigInteger {
+                    base: self,
+                    ser: custom_ser::HashSerializer::new_uint(32),
+                }),
+            },
+            None => {
+                let root = Node::Tuple(Vec::with_capacity(len));
+                Ok(NodeCompound::Standard {
+                    base: self,
+                    ser: NodeSerializer::new(root),
+                })
+            }
+        }
     }
 
     fn serialize_tuple_struct(
@@ -621,7 +694,7 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
         len: usize,
     ) -> Result<Self::SerializeTupleStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(NodeCompound {
+        Ok(NodeCompound::Standard {
             base: self,
             ser: NodeSerializer::new(root),
         })
@@ -635,7 +708,7 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
         let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(NodeCompound {
+        Ok(NodeCompound::Standard {
             base: self,
             ser: NodeSerializer::new(root),
         })
@@ -647,7 +720,7 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
 
     fn serialize_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(NodeCompound {
+        Ok(NodeCompound::Standard {
             base: self,
             ser: NodeSerializer::new(root),
         })
@@ -661,16 +734,22 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
         len: usize,
     ) -> Result<Self::SerializeStruct> {
         let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(NodeCompound {
+        Ok(NodeCompound::Standard {
             base: self,
             ser: NodeSerializer::new(root),
         })
     }
 }
 
-pub struct RootCompound<'a, W: 'a> {
-    writer: &'a mut W,
-    ser: NodeSerializer,
+pub enum RootCompound<'a, W: 'a> {
+    Standard {
+        writer: &'a mut Serializer<W>,
+        ser: NodeSerializer,
+    },
+    BigInteger {
+        writer: &'a mut Serializer<W>,
+        ser: custom_ser::HashSerializer,
+    },
 }
 
 impl<'a, W: io::Write> ser::SerializeSeq for RootCompound<'a, W> {
@@ -678,15 +757,21 @@ impl<'a, W: io::Write> ser::SerializeSeq for RootCompound<'a, W> {
     type Error = Error;
 
     fn serialize_element<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<()> {
-        value.serialize(&mut self.ser)
+        match self {
+            RootCompound::Standard { writer: _, ser } => value.serialize(ser),
+            RootCompound::BigInteger { writer: _, ser } => value.serialize(ser),
+        }
     }
 
     fn end(self) -> Result<()> {
-        let node = self.ser.into_inner();
-        let encoded = node.serialize();
-        self.writer
-            .write_all(&encoded.into_bytes())
-            .map_err(Error::io)
+        match self {
+            RootCompound::Standard { writer, ser } => {
+                let node = ser.into_inner();
+                let encoded = node.serialize();
+                writer.write(&encoded.into_bytes())
+            }
+            RootCompound::BigInteger { writer, ser } => writer.write(&ser.serialize().into_bytes()),
+        }
     }
 }
 
@@ -789,7 +874,7 @@ pub fn to_writer<W: io::Write, T: ?Sized + ser::Serialize>(writer: W, value: &T)
 
 #[inline]
 pub fn to_vec<T: ?Sized + ser::Serialize>(value: &T) -> Result<Vec<u8>> {
-    let mut writer = Vec::with_capacity(128); // pre-allocate to hold the expected size of deserialized value
+    let mut writer = Vec::with_capacity(128);
     to_writer(&mut writer, value)?;
     Ok(writer)
 }
@@ -808,7 +893,7 @@ pub fn to_string<T: ?Sized + ser::Serialize>(value: &T) -> Result<String> {
 mod tests {
 
     use super::to_string;
-    use ethereum_types::H256;
+    use oasis_std::types::{H160, H256, U256};
     use serde::Serialize;
     use std::fmt::Debug;
 
@@ -818,6 +903,45 @@ mod tests {
             let s = to_string(value).unwrap();
             assert_eq!(s, out);
         }
+    }
+
+    fn gen_u256(n: u64) -> U256 {
+        let mut v = [0 as u8; 32];
+        v[31] = (n & 0x00ff) as u8;
+        v[30] = ((n >> 8) & 0x00ff) as u8;
+        v[29] = ((n >> 16) & 0x00ff) as u8;
+        v[28] = ((n >> 24) & 0x00ff) as u8;
+        v[27] = ((n >> 32) & 0x00ff) as u8;
+        v[26] = ((n >> 40) & 0x00ff) as u8;
+        v[25] = ((n >> 48) & 0x00ff) as u8;
+        v[24] = ((n >> 56) & 0x00ff) as u8;
+        U256::from(v)
+    }
+
+    fn gen_h256(n: u64) -> H256 {
+        let mut v = [0 as u8; 32];
+        v[31] = (n & 0x00ff) as u8;
+        v[30] = ((n >> 8) & 0x00ff) as u8;
+        v[29] = ((n >> 16) & 0x00ff) as u8;
+        v[28] = ((n >> 24) & 0x00ff) as u8;
+        v[27] = ((n >> 32) & 0x00ff) as u8;
+        v[26] = ((n >> 40) & 0x00ff) as u8;
+        v[25] = ((n >> 48) & 0x00ff) as u8;
+        v[24] = ((n >> 56) & 0x00ff) as u8;
+        H256::from(v)
+    }
+
+    fn gen_h160(n: u64) -> H160 {
+        let mut v = [0 as u8; 20];
+        v[19] = (n & 0x00ff) as u8;
+        v[18] = ((n >> 8) & 0x00ff) as u8;
+        v[17] = ((n >> 16) & 0x00ff) as u8;
+        v[16] = ((n >> 24) & 0x00ff) as u8;
+        v[15] = ((n >> 32) & 0x00ff) as u8;
+        v[14] = ((n >> 40) & 0x00ff) as u8;
+        v[13] = ((n >> 48) & 0x00ff) as u8;
+        v[12] = ((n >> 56) & 0x00ff) as u8;
+        H160::from(v)
     }
 
     #[derive(Serialize, Debug, PartialEq)]
@@ -834,6 +958,114 @@ mod tests {
     #[derive(Serialize, Clone, Debug, PartialEq)]
     struct Composed {
         field: Vec<Vec<(String, (H256, [u32; 4]))>>,
+    }
+
+    #[test]
+    fn test_write_h160() {
+        let tests = &[
+            (
+                gen_h160(0),
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                gen_h160(2),
+                "0000000000000000000000000000000000000000000000000000000000000002",
+            ),
+            (
+                gen_h160(15),
+                "000000000000000000000000000000000000000000000000000000000000000f",
+            ),
+            (
+                gen_h160(16),
+                "0000000000000000000000000000000000000000000000000000000000000010",
+            ),
+            (
+                gen_h160(1_000),
+                "00000000000000000000000000000000000000000000000000000000000003e8",
+            ),
+            (
+                gen_h160(100_000),
+                "00000000000000000000000000000000000000000000000000000000000186a0",
+            ),
+            (
+                gen_h160(u64::max_value()),
+                "000000000000000000000000000000000000000000000000ffffffffffffffff",
+            ),
+        ];
+
+        test_encode_ok(tests);
+    }
+
+    #[test]
+    fn test_write_h256() {
+        let tests = &[
+            (
+                gen_h256(0),
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                gen_h256(2),
+                "0000000000000000000000000000000000000000000000000000000000000002",
+            ),
+            (
+                gen_h256(15),
+                "000000000000000000000000000000000000000000000000000000000000000f",
+            ),
+            (
+                gen_h256(16),
+                "0000000000000000000000000000000000000000000000000000000000000010",
+            ),
+            (
+                gen_h256(1_000),
+                "00000000000000000000000000000000000000000000000000000000000003e8",
+            ),
+            (
+                gen_h256(100_000),
+                "00000000000000000000000000000000000000000000000000000000000186a0",
+            ),
+            (
+                gen_h256(u64::max_value()),
+                "000000000000000000000000000000000000000000000000ffffffffffffffff",
+            ),
+        ];
+
+        test_encode_ok(tests);
+    }
+
+    #[test]
+    fn test_write_u256() {
+        let tests = &[
+            (
+                gen_u256(0),
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                gen_u256(2),
+                "0000000000000000000000000000000000000000000000000000000000000002",
+            ),
+            (
+                gen_u256(15),
+                "000000000000000000000000000000000000000000000000000000000000000f",
+            ),
+            (
+                gen_u256(16),
+                "0000000000000000000000000000000000000000000000000000000000000010",
+            ),
+            (
+                gen_u256(1_000),
+                "00000000000000000000000000000000000000000000000000000000000003e8",
+            ),
+            (
+                gen_u256(100_000),
+                "00000000000000000000000000000000000000000000000000000000000186a0",
+            ),
+            (
+                gen_u256(u64::max_value()),
+                "000000000000000000000000000000000000000000000000ffffffffffffffff",
+            ),
+        ];
+
+        test_encode_ok(tests);
     }
 
     #[test]
@@ -1190,6 +1422,19 @@ mod tests {
     }
 
     #[test]
+    fn test_write_u8_fixed_seq() {
+        let tests = &[
+            (
+                [1 as u8; 3],
+                "0000000000000000000000000000000000000000000000000000000000000001\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 0000000000000000000000000000000000000000000000000000000000000001",
+            ),
+        ];
+        test_encode_ok(tests);
+    }
+
+    #[test]
     fn test_write_str_seq() {
         let tests = &[
             (
@@ -1290,11 +1535,7 @@ mod tests {
              0000000000000000000000000000000000000000000000000000000000000040\
              0000000000000000000000000000000000000000000000000000000000000006\
              737472696e670000000000000000000000000000000000000000000000000000\
-             0000000000000000000000000000000000000000000000000000000000000040\
-             0000000000000000000000000000000000000000000000000000000000000042\
-             3078303130313031303130313031303130313031303130313031303130313031\
-             3031303130313031303130313031303130313031303130313031303130313031\
-             3031000000000000000000000000000000000000000000000000000000000000\
+             0101010101010101010101010101010101010101010101010101010101010101\
              0000000000000000000000000000000000000000000000000000000000000002\
              0000000000000000000000000000000000000000000000000000000000000002\
              0000000000000000000000000000000000000000000000000000000000000002\
