@@ -1,22 +1,45 @@
 use serde::de;
 
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::{
+    io::{Cursor, Read, Seek, SeekFrom},
+    vec::Vec,
+};
 
 use super::{
     error::{Category, Error, Result},
     eth,
 };
 
+pub struct Scope {
+    offset: usize,
+    read_up_to: usize,
+}
+
 pub struct Deserializer<R> {
     read: R,
+    scope: Vec<Scope>,
 }
 
 impl<R: Read + Seek> Deserializer<R> {
     pub fn new(read: R) -> Self {
-        Deserializer { read: read }
+        Deserializer { read: read, scope: Vec::new() }
     }
 
-    pub fn must_read(&mut self, bytes: &mut [u8]) -> Result<()> {
+    pub fn push_scope(&mut self, scope: Scope) {
+        self.scope.push(scope);
+    }
+
+    pub fn pop_scope(&mut self) -> Option<Scope> {
+        self.scope.pop()
+    }
+
+    fn seek(&mut self, from: SeekFrom) -> Result<u64> {
+        self.read
+            .seek(from)
+            .map_err(Error::io)
+    }
+
+    fn must_read(&mut self, bytes: &mut [u8]) -> Result<()> {
         let mut total_read_bytes: usize = 0;
 
         while total_read_bytes < bytes.len() {
@@ -50,8 +73,8 @@ impl<R: Read + Seek> Deserializer<R> {
         }
     }
 
-    fn read_char(&mut self, scope_offset: u64) -> Result<char> {
-        let bytes = self.read_byte_array(scope_offset, true)?;
+    fn read_char(&mut self) -> Result<char> {
+        let bytes = self.read_byte_array()?;
         if bytes.len() > 4 {
             return Err(Error::parsing(
                 "parsed char from byte array longer than 4 bytes",
@@ -67,23 +90,36 @@ impl<R: Read + Seek> Deserializer<R> {
         }
     }
 
-    fn read_str(&mut self, scope_offset: u64) -> Result<String> {
-        let bytes = self.read_byte_array(scope_offset, true)?;
+    fn read_str(&mut self) -> Result<String> {
+        let bytes = self.read_byte_array()?;
         match std::str::from_utf8(&bytes[..]) {
             Err(_) => Err(Error::parsing("parsed byte array cannot decode to a char")),
             Ok(s) => Ok(s.to_string()),
         }
     }
 
-    fn read_byte_array(&mut self, scope_offset: u64, consume_all: bool) -> Result<Vec<u8>> {
+    fn read_byte_array(&mut self) -> Result<Vec<u8>> {
+        println!("10");
         let bytes_offset = self.read_uint(64)?;
-        let offset = (bytes_offset - scope_offset) << 1;
 
-        self.read
-            .seek(SeekFrom::Current(offset as i64))
+        let offset = match self.pop_scope() {
+            Some(scope) => {
+                let offset = (bytes_offset << 1) + scope.offset as u64;
+                self.push_scope(scope);
+                offset
+            },
+            None => bytes_offset << 1,
+        };
+
+        println!("11 read offset: {}", bytes_offset);
+
+        let new_seek = self.read
+            .seek(SeekFrom::Start(offset as u64))
             .map_err(Error::io)?;
+        println!("12 content offset: {}", new_seek);
 
         let len = self.read_uint(64)?;
+        println!("len: {}", len);
         let read_bytes = len << 1;
         // only read multiple of 64 bytes
         let base = (read_bytes >> 6) << 6;
@@ -92,19 +128,18 @@ impl<R: Read + Seek> Deserializer<R> {
         let mut read_data = vec![0; read_len as usize];
         self.must_read(&mut read_data[..])?;
 
-        let data = eth::decode_bytes(&read_data, len as usize)?;
+        // keep track of how much data is read for a particular scope
+        match self.pop_scope() {
+            Some(scope) => {
+                self.push_scope(Scope{
+                    offset: scope.offset,
+                    read_up_to: 64 + read_len as usize + scope.read_up_to,
+                });
+            },
+            None => { },
+        };
 
-        // after reading the relevant data the reader need to seek back
-        // to the next available offset after the bytes that have been read
-
-        if !consume_all {
-            let seek_back_len = -((offset as i64) + (read_len as i64) + 64);
-            self.read
-                .seek(SeekFrom::Current(seek_back_len))
-                .map_err(Error::io)?;
-        }
-
-        Ok(data)
+        eth::decode_bytes(&read_data, len as usize)
     }
 
     fn read_uint(&mut self, size: usize) -> Result<u64> {
@@ -184,28 +219,28 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
     }
 
     fn deserialize_char<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let c = self.read_char(32)?;
+        let c = self.read_char()?;
         visitor.visit_char(c)
     }
 
     fn deserialize_str<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let s = self.read_str(32)?;
+        let s = self.read_str()?;
         visitor.visit_str(&s)
     }
 
     fn deserialize_string<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let s = self.read_str(32)?;
+        let s = self.read_str()?;
         visitor.visit_string(s)
     }
 
     fn deserialize_bytes<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let b = self.read_byte_array(32, true)?;
+        let b = self.read_byte_array()?;
         visitor.visit_bytes(&b[..])
     }
 
     #[inline]
     fn deserialize_byte_buf<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let b = self.read_byte_array(32, true)?;
+        let b = self.read_byte_array()?;
         visitor.visit_byte_buf(b)
     }
 
@@ -236,7 +271,28 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
     }
 
     fn deserialize_seq<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        let seq_offset = self.read_uint(64)?;
+        let offset = (seq_offset - 32) << 1;
+
+        let curr = self.read
+            .seek(SeekFrom::Current(offset as i64))
+            .map_err(Error::io)?;
+
+        let len = self.read_uint(64)?;
+        self.scope.push(Scope{
+            offset: 64 + curr as usize,
+            read_up_to: 0,
+        });
+
+        let res = visitor.visit_seq(SeqAccess::new(self, len as usize))?;
+        let scope = self.scope.pop().unwrap();
+
+        // skip all read content
+        let final_offset = self.read
+            .seek(SeekFrom::Current(scope.read_up_to as i64))
+            .map_err(Error::io)?;
+
+        Ok(res)
     }
 
     fn deserialize_tuple<V: de::Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value> {
@@ -283,6 +339,51 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
 
     fn deserialize_ignored_any<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         Err(Error::not_implemented())
+    }
+}
+
+struct SeqAccess<'a, R: 'a> {
+    len: usize,
+    count: usize,
+    de: &'a mut Deserializer<R>,
+}
+
+impl<'a, R: 'a> SeqAccess<'a, R> {
+    fn new(de: &'a mut Deserializer<R>, len: usize) -> Self {
+        SeqAccess {
+            len: len,
+            count: 0,
+            de: de,
+        }
+    }
+}
+
+impl<'de, 'a, R: Read + Seek + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
+    type Error = Error;
+
+    fn next_element_seed<T: de::DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>>
+    {
+        println!("count: {}", self.count);
+        self.count += 1;
+        if self.count > self.len {
+            return Ok(None);
+        }
+
+        let res = seed.deserialize(&mut *self.de);
+
+        // it's a bug if there is no scope set when a SeqAccess is created
+        let scope = self.de.pop_scope().unwrap();
+        let new_offset = scope.offset + 64*self.count;
+        println!("1 head offset : {}", new_offset);
+        let new_seek = self.de.seek(SeekFrom::Start(new_offset as u64))?;
+        println!("2 head seek: {}", new_seek);
+
+        self.de.push_scope(scope);
+
+        match res {
+            Err(err) => Err(err),
+            Ok(value) => Ok(Some(value)),
+        }
     }
 }
 
@@ -662,4 +763,121 @@ mod tests {
 
         test_parse_ok(tests);
     }
+
+    #[test]
+    fn test_parse_unit() {
+        let tests = &[("", ())];
+        test_parse_ok(tests);
+    }
+
+    // #[test]
+    // fn test_pasre_tuple_int() {
+    //     let tests = &[(
+    //         "0000000000000000000000000000000000000000000000000000000000000001\
+    //          0000000000000000000000000000000000000000000000000000000000000040\
+    //          0000000000000000000000000000000000000000000000000000000000000001\
+    //          3100000000000000000000000000000000000000000000000000000000000000",
+    //         (1, "1"),
+    //     )];
+    //     test_encode_ok(tests);
+    // }
+
+    // #[test]
+    // fn test_write_tuple_string() {
+    //     let tests = &[(
+    //         ("1", "2"),
+    //         "0000000000000000000000000000000000000000000000000000000000000040\
+    //          0000000000000000000000000000000000000000000000000000000000000080\
+    //          0000000000000000000000000000000000000000000000000000000000000001\
+    //          3100000000000000000000000000000000000000000000000000000000000000\
+    //          0000000000000000000000000000000000000000000000000000000000000001\
+    //          3200000000000000000000000000000000000000000000000000000000000000",
+    //     )];
+    //     test_encode_ok(tests);
+    // }
+
+    #[test]
+    fn test_write_int_seq() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000003\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 0000000000000000000000000000000000000000000000000000000000000002\
+                 0000000000000000000000000000000000000000000000000000000000000003",
+                vec![1, 2, 3],
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000000",
+                vec![],
+            ),
+        ];
+
+        test_parse_ok(tests);
+    }
+
+    // #[test]
+    // fn test_write_u8_fixed_seq() {
+    //     let tests = &[(
+    //         [1 as u8; 3],
+    //         "0000000000000000000000000000000000000000000000000000000000000001\
+    //          0000000000000000000000000000000000000000000000000000000000000001\
+    //          0000000000000000000000000000000000000000000000000000000000000001",
+    //     )];
+    //     test_encode_ok(tests);
+    // }
+
+    #[test]
+    fn test_parse_str_seq() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000003\
+                 0000000000000000000000000000000000000000000000000000000000000060\
+                 00000000000000000000000000000000000000000000000000000000000000a0\
+                 00000000000000000000000000000000000000000000000000000000000000e0\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 3100000000000000000000000000000000000000000000000000000000000000\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 3200000000000000000000000000000000000000000000000000000000000000\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 3300000000000000000000000000000000000000000000000000000000000000",
+                vec!["1".to_string(), "2".to_string(), "3".to_string()],
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000000",
+                vec![],
+            ),
+        ];
+        test_parse_ok(tests);
+    }
+
+    // #[test]
+    // fn test_write_multiseq() {
+    //     let tests = &[(
+    //         vec![vec!["1", "2"], vec!["3", "4"]],
+    //         "0000000000000000000000000000000000000000000000000000000000000020\
+    //          0000000000000000000000000000000000000000000000000000000000000002\
+    //          0000000000000000000000000000000000000000000000000000000000000040\
+    //          0000000000000000000000000000000000000000000000000000000000000120\
+    //          0000000000000000000000000000000000000000000000000000000000000002\
+    //          0000000000000000000000000000000000000000000000000000000000000040\
+    //          0000000000000000000000000000000000000000000000000000000000000080\
+    //          0000000000000000000000000000000000000000000000000000000000000001\
+    //          3100000000000000000000000000000000000000000000000000000000000000\
+    //          0000000000000000000000000000000000000000000000000000000000000001\
+    //          3200000000000000000000000000000000000000000000000000000000000000\
+    //          0000000000000000000000000000000000000000000000000000000000000002\
+    //          0000000000000000000000000000000000000000000000000000000000000040\
+    //          0000000000000000000000000000000000000000000000000000000000000080\
+    //          0000000000000000000000000000000000000000000000000000000000000001\
+    //          3300000000000000000000000000000000000000000000000000000000000000\
+    //          0000000000000000000000000000000000000000000000000000000000000001\
+    //          3400000000000000000000000000000000000000000000000000000000000000",
+    //     )];
+    //     test_encode_ok(tests);
+    // }
+
 }
