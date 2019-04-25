@@ -11,6 +11,7 @@ pub type Result<T> = result::Result<T, Error>;
 impl Error {
     pub fn classify(&self) -> Category {
         match self.err.code {
+            ErrorCode::TupleHint(_, _) => Category::TupleHint,
             ErrorCode::Message(_) => Category::Data,
             ErrorCode::IO(_) => Category::IO,
             ErrorCode::NotImplemented => Category::Internal,
@@ -18,6 +19,17 @@ impl Error {
             ErrorCode::HexParsing(_) => Category::Syntax,
             ErrorCode::Parsing(_) => Category::Syntax,
         }
+    }
+
+    pub fn tuple_hint(&self) -> Option<TupleHint> {
+        match self.err.code {
+            ErrorCode::TupleHint(ref hint, _) => Some(*hint),
+            _ => None,
+        }
+    }
+
+    pub fn is_hint(&self) -> bool {
+        self.classify() == Category::TupleHint
     }
 
     pub fn is_io(&self) -> bool {
@@ -39,6 +51,7 @@ impl Error {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Category {
+    TupleHint,
     IO,
     Syntax,
     Data,
@@ -46,11 +59,24 @@ pub enum Category {
     Internal,
 }
 
+#[derive(Clone, Copy)]
+pub struct TupleHint {
+    pub index: u64,
+    pub is_dynamic: bool,
+}
+
+impl TupleHint {
+    pub fn new(index: u64, is_dynamic: bool) -> Self {
+        TupleHint { index, is_dynamic }
+    }
+}
+
 struct ErrorImpl {
     code: ErrorCode,
 }
 
 pub enum ErrorCode {
+    TupleHint(TupleHint, Error),
     Message(Box<str>),
     IO(io::Error),
     NotImplemented,
@@ -72,6 +98,14 @@ impl Error {
         Error {
             err: Box::new(ErrorImpl {
                 code: ErrorCode::IO(error),
+            }),
+        }
+    }
+
+    pub(crate) fn hint(hint: TupleHint, cause: Error) -> Self {
+        Error {
+            err: Box::new(ErrorImpl {
+                code: ErrorCode::TupleHint(hint, cause),
             }),
         }
     }
@@ -112,6 +146,7 @@ impl Error {
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
+            ErrorCode::TupleHint(_, ref err) => fmt::Display::fmt(err, f),
             ErrorCode::Message(ref msg) => f.write_str(msg),
             ErrorCode::IO(ref err) => fmt::Display::fmt(err, f),
             ErrorCode::NotImplemented => f.write_str("not implemented"),
@@ -125,6 +160,7 @@ impl fmt::Display for ErrorCode {
 impl error::Error for Error {
     fn description(&self) -> &str {
         match self.err.code {
+            ErrorCode::TupleHint(_, ref err) => error::Error::description(err),
             ErrorCode::IO(ref err) => error::Error::description(err),
             ErrorCode::Message(ref str) => str,
             ErrorCode::NotImplemented => "not implemented",
@@ -136,6 +172,7 @@ impl error::Error for Error {
 
     fn cause(&self) -> Option<&error::Error> {
         match self.err.code {
+            ErrorCode::TupleHint(_, ref err) => Some(err),
             ErrorCode::IO(ref err) => Some(err),
             ErrorCode::EthParsing(ref err) => Some(err),
             ErrorCode::HexParsing(ref err) => Some(err),

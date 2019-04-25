@@ -1,28 +1,71 @@
 use serde::de;
 
 use std::{
+    collections::HashMap,
+    error::Error as stdError,
     io::{Cursor, Read, Seek, SeekFrom},
     vec::Vec,
 };
 
 use super::{
-    error::{Category, Error, Result},
+    error::{Category, Error, Result, TupleHint},
     eth,
 };
 
-pub struct Scope {
-    offset: usize,
-    read_up_to: usize,
+#[derive(Clone)]
+pub enum BaseType {
+    Static,
+    Dynamic,
 }
 
-pub struct Deserializer<R> {
-    read: R,
+pub struct Scope {
+    offset: usize,
+    read_head: usize,
+    read_tail: usize,
+    types: Vec<BaseType>,
+}
+
+impl Scope {
+    fn new(offset: usize) -> Self {
+        Scope {
+            offset: offset,
+            read_head: 0,
+            read_tail: 0,
+            types: Vec::new(),
+        }
+    }
+
+    fn has_dynamic_types(&self) -> bool {
+        for t in &self.types {
+            match t {
+                BaseType::Dynamic => return true,
+                _ => {}
+            }
+        }
+
+        false
+    }
+}
+
+pub struct Deserializer<'r, R> {
+    tuple_counter: u64,
+    read: &'r mut RefReadSeek<R>,
+    tuple_hints: HashMap<u64, BaseType>,
     scope: Vec<Scope>,
 }
 
-impl<R: Read + Seek> Deserializer<R> {
-    pub fn new(read: R) -> Self {
-        Deserializer { read: read, scope: Vec::new() }
+impl<'r, R: Read + Seek> Deserializer<'r, R> {
+    pub fn new(read: &'r mut RefReadSeek<R>) -> Self {
+        Deserializer::with_hints(read, HashMap::new())
+    }
+
+    pub fn with_hints(read: &'r mut RefReadSeek<R>, tuple_hints: HashMap<u64, BaseType>) -> Self {
+        Deserializer {
+            tuple_counter: 0,
+            read: read,
+            tuple_hints: tuple_hints,
+            scope: Vec::new(),
+        }
     }
 
     pub fn push_scope(&mut self, scope: Scope) {
@@ -34,19 +77,15 @@ impl<R: Read + Seek> Deserializer<R> {
     }
 
     fn seek(&mut self, from: SeekFrom) -> Result<u64> {
-        self.read
-            .seek(from)
-            .map_err(Error::io)
+        self.read.seek(from)
     }
 
     fn must_read(&mut self, bytes: &mut [u8]) -> Result<()> {
         let mut total_read_bytes: usize = 0;
 
         while total_read_bytes < bytes.len() {
-            let read_bytes = self
-                .read
-                .read(&mut bytes[total_read_bytes..])
-                .map_err(Error::io)?;
+            let read_bytes = self.read.read(&mut bytes[total_read_bytes..])?;
+
             if read_bytes == 0 {
                 break;
             }
@@ -99,28 +138,23 @@ impl<R: Read + Seek> Deserializer<R> {
     }
 
     fn read_byte_array(&mut self) -> Result<Vec<u8>> {
-        println!("10");
-        let bytes_offset = self.read_uint(64)?;
+        let bytes_offset = self.read_uint_head(64)?;
 
         let offset = match self.pop_scope() {
-            Some(scope) => {
+            Some(mut scope) => {
                 let offset = (bytes_offset << 1) + scope.offset as u64;
+                scope.types.push(BaseType::Dynamic);
                 self.push_scope(scope);
                 offset
-            },
+            }
             None => bytes_offset << 1,
         };
 
-        println!("11 read offset: {}", bytes_offset);
+        let _ = self.seek(SeekFrom::Start(offset as u64))?;
 
-        let new_seek = self.read
-            .seek(SeekFrom::Start(offset as u64))
-            .map_err(Error::io)?;
-        println!("12 content offset: {}", new_seek);
-
-        let len = self.read_uint(64)?;
-        println!("len: {}", len);
+        let len = self.read_uint_tail(64)?;
         let read_bytes = len << 1;
+
         // only read multiple of 64 bytes
         let base = (read_bytes >> 6) << 6;
         let remain = if read_bytes - base == 0 { 0 } else { 1 };
@@ -130,32 +164,131 @@ impl<R: Read + Seek> Deserializer<R> {
 
         // keep track of how much data is read for a particular scope
         match self.pop_scope() {
-            Some(scope) => {
-                self.push_scope(Scope{
-                    offset: scope.offset,
-                    read_up_to: 64 + read_len as usize + scope.read_up_to,
-                });
-            },
-            None => { },
+            Some(mut scope) => {
+                scope.read_tail += 64 + read_len as usize;
+                self.push_scope(scope);
+            }
+            None => {}
         };
 
         eth::decode_bytes(&read_data, len as usize)
     }
 
-    fn read_uint(&mut self, size: usize) -> Result<u64> {
+    fn read_static_size_tuple<'de, V: de::Visitor<'de>>(
+        &mut self,
+        offset: usize,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value> {
+        let curr = self.seek(SeekFrom::Start(offset as u64))?;
+        self.push_scope(Scope::new(curr as usize));
+        let res = visitor.visit_seq(StaticTupleAccess::new(self, len as usize));
+        let _ = self.scope.pop().unwrap();
+        res
+    }
+
+    fn read_dynamic_size_tuple<'de, V: de::Visitor<'de>>(
+        &mut self,
+        offset: usize,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value> {
+        let tuple_offset = self.read_uint_head(64)?;
+        let offset = (tuple_offset << 1) + offset as u64;
+
+        let curr = self.seek(SeekFrom::Start(offset as u64))?;
+        self.push_scope(Scope::new(curr as usize));
+
+        let res = visitor.visit_seq(DynamicTupleAccess::new(self, len as usize));
+        let _ = self.scope.pop().unwrap();
+        res
+    }
+
+    fn peek_uint(&mut self, size: usize) -> Result<u64> {
         let mut bytes = [0; 64];
         self.must_read(&mut bytes)?;
+        self.seek(SeekFrom::Current(-64))?;
         eth::decode_uint(&bytes, size)
     }
 
-    fn read_int(&mut self, size: usize) -> Result<i64> {
+    fn deserialize_uint(&mut self, size: usize) -> Result<u64> {
+        match self.pop_scope() {
+            Some(mut scope) => {
+                scope.types.push(BaseType::Static);
+                self.push_scope(scope);
+            }
+            None => {}
+        }
+
+        return self.read_uint_head(size);
+    }
+
+    fn deserialize_int(&mut self, size: usize) -> Result<i64> {
+        match self.pop_scope() {
+            Some(mut scope) => {
+                scope.types.push(BaseType::Static);
+                self.push_scope(scope);
+            }
+            None => {}
+        }
+
+        return self.read_int_head(size);
+    }
+
+    fn read_uint_head(&mut self, size: usize) -> Result<u64> {
         let mut bytes = [0; 64];
         self.must_read(&mut bytes)?;
+        match self.pop_scope() {
+            Some(mut scope) => {
+                scope.read_head += 64;
+                self.push_scope(scope);
+            }
+            None => {}
+        };
+        eth::decode_uint(&bytes, size)
+    }
+
+    fn read_uint_tail(&mut self, size: usize) -> Result<u64> {
+        let mut bytes = [0; 64];
+        self.must_read(&mut bytes)?;
+        match self.pop_scope() {
+            Some(mut scope) => {
+                scope.read_tail += 64;
+                self.push_scope(scope);
+            }
+            None => {}
+        };
+        eth::decode_uint(&bytes, size)
+    }
+
+    fn read_int_head(&mut self, size: usize) -> Result<i64> {
+        let mut bytes = [0; 64];
+        self.must_read(&mut bytes)?;
+        match self.pop_scope() {
+            Some(mut scope) => {
+                scope.read_head += 64;
+                self.push_scope(scope);
+            }
+            None => {}
+        };
+        eth::decode_int(&bytes, size)
+    }
+
+    fn read_int_tail(&mut self, size: usize) -> Result<i64> {
+        let mut bytes = [0; 64];
+        self.must_read(&mut bytes)?;
+        match self.pop_scope() {
+            Some(mut scope) => {
+                scope.read_tail += 64;
+                self.push_scope(scope);
+            }
+            None => {}
+        };
         eth::decode_int(&bytes, size)
     }
 }
 
-impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> {
+impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<'r, R> {
     type Error = Error;
 
     #[inline]
@@ -164,6 +297,14 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
     }
 
     fn deserialize_bool<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        match self.pop_scope() {
+            Some(mut scope) => {
+                scope.types.push(BaseType::Static);
+                self.push_scope(scope);
+            }
+            None => {}
+        }
+
         let mut bytes = [0; 64];
         self.must_read(&mut bytes)?;
         let value = eth::decode_bool(&bytes)?;
@@ -171,42 +312,42 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
     }
 
     fn deserialize_i8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.read_int(8)?;
+        let value = self.deserialize_int(8)?;
         visitor.visit_i8(value as i8)
     }
 
     fn deserialize_i16<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.read_int(16)?;
+        let value = self.deserialize_int(16)?;
         visitor.visit_i16(value as i16)
     }
 
     fn deserialize_i32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.read_int(32)?;
+        let value = self.deserialize_int(32)?;
         visitor.visit_i32(value as i32)
     }
 
     fn deserialize_i64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.read_int(64)?;
+        let value = self.deserialize_int(64)?;
         visitor.visit_i64(value as i64)
     }
 
     fn deserialize_u8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.read_uint(8)?;
+        let value = self.deserialize_uint(8)?;
         visitor.visit_u8(value as u8)
     }
 
     fn deserialize_u16<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.read_uint(16)?;
+        let value = self.deserialize_uint(16)?;
         visitor.visit_u16(value as u16)
     }
 
     fn deserialize_u32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.read_uint(32)?;
+        let value = self.deserialize_uint(32)?;
         visitor.visit_u32(value as u32)
     }
 
     fn deserialize_u64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.read_uint(64)?;
+        let value = self.deserialize_uint(64)?;
         visitor.visit_u64(value as u64)
     }
 
@@ -246,7 +387,33 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
 
     #[inline]
     fn deserialize_option<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        // we expect an option to be serialized as a dynamic sized array that can either
+        // have 1 element or 0.
+        let base = match self.pop_scope() {
+            Some(mut scope) => {
+                let offset = scope.offset;
+                scope.types.push(BaseType::Dynamic);
+                self.push_scope(scope);
+                offset
+            }
+            None => 0,
+        };
+
+        let seq_offset = self.read_uint_head(64)?;
+        let offset = (seq_offset << 1) + base as u64;
+
+        let curr = self.seek(SeekFrom::Start(offset as u64))?;
+
+        let len = self.read_uint_tail(64)?;
+        if len == 0 {
+            return visitor.visit_none();
+        }
+
+        self.push_scope(Scope::new(64 + curr as usize));
+
+        let res = visitor.visit_some(&mut *self);
+        let _ = self.scope.pop().unwrap();
+        res
     }
 
     fn deserialize_unit<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -271,44 +438,81 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
     }
 
     fn deserialize_seq<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let seq_offset = self.read_uint(64)?;
-        let offset = (seq_offset - 32) << 1;
+        let base = match self.pop_scope() {
+            Some(mut scope) => {
+                let offset = scope.offset;
+                scope.types.push(BaseType::Dynamic);
+                self.push_scope(scope);
+                offset
+            }
+            None => 0,
+        };
 
-        let curr = self.read
-            .seek(SeekFrom::Current(offset as i64))
-            .map_err(Error::io)?;
+        let seq_offset = self.read_uint_head(64)?;
+        let offset = (seq_offset << 1) + base as u64;
 
-        let len = self.read_uint(64)?;
-        self.scope.push(Scope{
-            offset: 64 + curr as usize,
-            read_up_to: 0,
-        });
+        let curr = self.seek(SeekFrom::Start(offset as u64))?;
 
-        let res = visitor.visit_seq(SeqAccess::new(self, len as usize))?;
-        let scope = self.scope.pop().unwrap();
+        let len = self.read_uint_tail(64)?;
+        self.push_scope(Scope::new(64 + curr as usize));
 
-        // skip all read content
-        let final_offset = self.read
-            .seek(SeekFrom::Current(scope.read_up_to as i64))
-            .map_err(Error::io)?;
-
-        Ok(res)
+        let res = visitor.visit_seq(SeqAccess::new(self, len as usize));
+        let _ = self.scope.pop().unwrap();
+        res
     }
 
-    fn deserialize_tuple<V: de::Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+    fn deserialize_tuple<V: de::Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value> {
+        self.tuple_counter += 1;
+
+        let base = match self.pop_scope() {
+            Some(mut scope) => {
+                let offset = scope.offset;
+                scope.types.push(BaseType::Dynamic);
+                self.push_scope(scope);
+                offset
+            }
+            None => 0,
+        };
+
+        // for tuples the deserialization is ambiguous. If the user has passed
+        // a hint, used the hint to deserialize the tuple with that index
+        let hint = self.tuple_hints.get(&self.tuple_counter);
+
+        match hint {
+            Some(h) => match h {
+                BaseType::Static => self.read_static_size_tuple(base, len, visitor),
+                BaseType::Dynamic => self.read_dynamic_size_tuple(base, len, visitor),
+            },
+            None => {
+                // in case there's no hint, the assumption is the following:
+                // if the first integer in the tuple is multiple of 32 it could be an offset,
+                // in which case it would be a dynamic sized tuple. In case it is not multiple
+                // of 32, for sure it is not an offset, in which case can be safely
+                // deserialized as a static sized tuple.
+                let tuple_offset = self.peek_uint(64)?;
+
+                if tuple_offset % 32 == 0 {
+                    // This is just a guess, it can be that this fails, in which case
+                    // an error with TupleHint will be raised so that the deserialization
+                    // can be attempted again
+                    self.read_dynamic_size_tuple(base, len, visitor)
+                } else {
+                    self.read_static_size_tuple(base, len, visitor)
+                }
+            }
+        }
     }
 
     fn deserialize_tuple_struct<V: de::Visitor<'de>>(
         self,
         _name: &'static str,
-        _len: usize,
+        len: usize,
         visitor: V,
     ) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        self.deserialize_tuple(len, visitor)
     }
 
-    fn deserialize_map<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+    fn deserialize_map<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
         Err(Error::not_implemented())
     }
 
@@ -318,11 +522,9 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
         _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        self.deserialize_tuple(_fields.len(), visitor)
     }
 
-    /// Parses an enum as an object like `{"$KEY":$VALUE}`, where $VALUE is either a straight
-    /// value, a `[..]`, or a `{..}`.
     #[inline]
     fn deserialize_enum<V: de::Visitor<'de>>(
         self,
@@ -342,14 +544,14 @@ impl<'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<R> 
     }
 }
 
-struct SeqAccess<'a, R: 'a> {
+struct SeqAccess<'r, 'a, R> {
     len: usize,
     count: usize,
-    de: &'a mut Deserializer<R>,
+    de: &'a mut Deserializer<'r, R>,
 }
 
-impl<'a, R: 'a> SeqAccess<'a, R> {
-    fn new(de: &'a mut Deserializer<R>, len: usize) -> Self {
+impl<'r, 'a, R> SeqAccess<'r, 'a, R> {
+    fn new(de: &'a mut Deserializer<'r, R>, len: usize) -> Self {
         SeqAccess {
             len: len,
             count: 0,
@@ -358,12 +560,13 @@ impl<'a, R: 'a> SeqAccess<'a, R> {
     }
 }
 
-impl<'de, 'a, R: Read + Seek + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
+impl<'de, 'r, 'a, R: Read + Seek + 'r> de::SeqAccess<'de> for SeqAccess<'r, 'a, R> {
     type Error = Error;
 
-    fn next_element_seed<T: de::DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>>
-    {
-        println!("count: {}", self.count);
+    fn next_element_seed<T: de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>> {
         self.count += 1;
         if self.count > self.len {
             return Ok(None);
@@ -371,12 +574,14 @@ impl<'de, 'a, R: Read + Seek + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
 
         let res = seed.deserialize(&mut *self.de);
 
-        // it's a bug if there is no scope set when a SeqAccess is created
         let scope = self.de.pop_scope().unwrap();
-        let new_offset = scope.offset + 64*self.count;
-        println!("1 head offset : {}", new_offset);
-        let new_seek = self.de.seek(SeekFrom::Start(new_offset as u64))?;
-        println!("2 head seek: {}", new_seek);
+        let new_offset = scope.offset + 64 * self.count;
+
+        if self.count < self.len {
+            // if there are still elements in the sequence, seek back to the next
+            // items's head
+            let _ = self.de.seek(SeekFrom::Start(new_offset as u64))?;
+        }
 
         self.de.push_scope(scope);
 
@@ -387,12 +592,179 @@ impl<'de, 'a, R: Read + Seek + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
     }
 }
 
-pub fn from_reader<'de, R: Read + Seek, T: de::Deserialize<'de>>(read: R) -> Result<T> {
-    let mut de = Deserializer::new(read);
-    let value = de::Deserialize::deserialize(&mut de)?;
+struct StaticTupleAccess<'r, 'a, R: 'r> {
+    len: usize,
+    count: usize,
+    de: &'a mut Deserializer<'r, R>,
+}
 
-    de.end()?;
-    Ok(value)
+impl<'r, 'a, R> StaticTupleAccess<'r, 'a, R> {
+    fn new(de: &'a mut Deserializer<'r, R>, len: usize) -> Self {
+        StaticTupleAccess {
+            len: len,
+            count: 0,
+            de: de,
+        }
+    }
+}
+
+impl<'de, 'r, 'a, R: Read + Seek + 'r> de::SeqAccess<'de> for StaticTupleAccess<'r, 'a, R> {
+    type Error = Error;
+
+    fn next_element_seed<T: de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>> {
+        self.count += 1;
+        if self.count > self.len {
+            return Ok(None);
+        }
+
+        let res = seed.deserialize(&mut *self.de);
+
+        let scope = self.de.pop_scope().unwrap();
+        let new_offset = scope.offset + 64 * self.count;
+
+        if self.count < self.len {
+            // if there are still elements in the sequence, seek back to the next
+            // items's head
+            let _ = self.de.seek(SeekFrom::Start(new_offset as u64))?;
+        }
+
+        self.de.push_scope(scope);
+
+        match res {
+            Err(err) => Err(err),
+            Ok(value) => Ok(Some(value)),
+        }
+    }
+}
+
+struct DynamicTupleAccess<'r, 'a, R: 'r> {
+    len: usize,
+    count: usize,
+    de: &'a mut Deserializer<'r, R>,
+}
+
+impl<'r, 'a, R: Read + Seek + 'r> DynamicTupleAccess<'r, 'a, R> {
+    fn new(de: &'a mut Deserializer<'r, R>, len: usize) -> Self {
+        DynamicTupleAccess {
+            len: len,
+            count: 0,
+            de: de,
+        }
+    }
+
+    fn get_error(&mut self, error: Error) -> Error {
+        match error.classify() {
+            Category::Data => {
+                let has_dynamic_types = match self.de.pop_scope() {
+                    Some(scope) => {
+                        let has_dynamic_types = scope.has_dynamic_types();
+                        self.de.push_scope(scope);
+                        has_dynamic_types
+                    }
+                    None => false,
+                };
+
+                let should_give_hint = error.description() == "insufficient bytes read from reader"
+                    && !has_dynamic_types;
+
+                if should_give_hint {
+                    Error::hint(TupleHint::new(self.de.tuple_counter, false), error)
+                } else {
+                    error
+                }
+            }
+            _ => error,
+        }
+    }
+}
+
+impl<'de, 'r, 'a, R: Read + Seek + 'a> de::SeqAccess<'de> for DynamicTupleAccess<'r, 'a, R> {
+    type Error = Error;
+
+    fn next_element_seed<T: de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>> {
+        self.count += 1;
+        if self.count > self.len {
+            return Ok(None);
+        }
+
+        let res = seed.deserialize(&mut *self.de);
+        match res {
+            Ok(_) => {}
+            Err(error) => return Err(self.get_error(error)),
+        }
+
+        let scope = self.de.pop_scope().unwrap();
+        let new_offset = scope.offset + 64 * self.count;
+        if self.count < self.len {
+            // if there are still elements in the sequence, seek back to the next
+            // items's head
+            let _ = self.de.seek(SeekFrom::Start(new_offset as u64))?;
+        }
+
+        self.de.push_scope(scope);
+
+        match res {
+            Err(err) => Err(err),
+            Ok(value) => Ok(Some(value)),
+        }
+    }
+}
+
+pub struct RefReadSeek<R> {
+    read: R,
+}
+
+impl<R: Read + Seek> RefReadSeek<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> Result<usize> {
+        self.read.read(bytes).map_err(Error::io)
+    }
+
+    fn seek(&mut self, offset: SeekFrom) -> Result<u64> {
+        self.read.seek(offset).map_err(Error::io)
+    }
+}
+
+pub fn from_reader<'de, R: Read + Seek, T: de::Deserialize<'de>>(read: R) -> Result<T> {
+    let mut hints = HashMap::new();
+    let mut read = RefReadSeek { read: read };
+
+    loop {
+        let mut de = Deserializer::with_hints(&mut read, hints.clone());
+        let res = de::Deserialize::deserialize(&mut de);
+        match res {
+            Err(err) => {
+                let hint = err.tuple_hint();
+                if hint.is_none() {
+                    return Err(err);
+                }
+
+                let hint = hint.unwrap();
+                if hints.contains_key(&hint.index) {
+                    return Err(err);
+                }
+
+                hints.insert(
+                    hint.index,
+                    if hint.is_dynamic {
+                        BaseType::Dynamic
+                    } else {
+                        BaseType::Static
+                    },
+                );
+                continue;
+            }
+            _ => {
+                de.end()?;
+                return res;
+            }
+        }
+    }
 }
 
 pub fn from_str<'a, T: de::Deserialize<'a>>(s: &'a str) -> Result<T> {
@@ -404,7 +776,7 @@ mod tests {
 
     use super::from_str;
     use crate::error::Result;
-    use serde::{de, ser};
+    use serde::{de, ser, Deserialize, Serialize};
     use std::{error::Error, fmt::Debug};
 
     fn test_parse_ok<T: Clone + Debug + PartialEq + ser::Serialize + de::DeserializeOwned>(
@@ -414,6 +786,18 @@ mod tests {
             let v: T = from_str(s).unwrap();
             assert_eq!(v, value.clone());
         }
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    struct Simple {
+        value1: String,
+        value2: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    struct Complex {
+        value: String,
+        simple: Simple,
     }
 
     fn test_parse_error<T: Clone + Debug + PartialEq + ser::Serialize + de::DeserializeOwned>(
@@ -770,34 +1154,71 @@ mod tests {
         test_parse_ok(tests);
     }
 
-    // #[test]
-    // fn test_pasre_tuple_int() {
-    //     let tests = &[(
-    //         "0000000000000000000000000000000000000000000000000000000000000001\
-    //          0000000000000000000000000000000000000000000000000000000000000040\
-    //          0000000000000000000000000000000000000000000000000000000000000001\
-    //          3100000000000000000000000000000000000000000000000000000000000000",
-    //         (1, "1"),
-    //     )];
-    //     test_encode_ok(tests);
-    // }
+    #[test]
+    fn test_parse_option() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000000",
+                None,
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000005\
+                 68656c6c6f000000000000000000000000000000000000000000000000000000",
+                Some("hello".to_string()),
+            ),
+        ];
 
-    // #[test]
-    // fn test_write_tuple_string() {
-    //     let tests = &[(
-    //         ("1", "2"),
-    //         "0000000000000000000000000000000000000000000000000000000000000040\
-    //          0000000000000000000000000000000000000000000000000000000000000080\
-    //          0000000000000000000000000000000000000000000000000000000000000001\
-    //          3100000000000000000000000000000000000000000000000000000000000000\
-    //          0000000000000000000000000000000000000000000000000000000000000001\
-    //          3200000000000000000000000000000000000000000000000000000000000000",
-    //     )];
-    //     test_encode_ok(tests);
-    // }
+        test_parse_ok(tests);
+    }
 
     #[test]
-    fn test_write_int_seq() {
+    fn test_parse_tuple_int() {
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000040\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3100000000000000000000000000000000000000000000000000000000000000",
+            (1, "1".to_string()),
+        )];
+
+        test_parse_ok(tests);
+    }
+
+    #[test]
+    fn test_parse_tuple_string() {
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000040\
+             0000000000000000000000000000000000000000000000000000000000000080\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3100000000000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3200000000000000000000000000000000000000000000000000000000000000",
+            ("1".to_string(), "2".to_string()),
+        )];
+
+        test_parse_ok(tests);
+    }
+
+    #[test]
+    fn test_parse_tuple_with_32int() {
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000020",
+            [0x20 as u8; 3],
+        )];
+
+        test_parse_ok(tests);
+    }
+
+    #[test]
+    fn test_parse_int_seq() {
         let tests = &[
             (
                 "0000000000000000000000000000000000000000000000000000000000000020\
@@ -817,16 +1238,17 @@ mod tests {
         test_parse_ok(tests);
     }
 
-    // #[test]
-    // fn test_write_u8_fixed_seq() {
-    //     let tests = &[(
-    //         [1 as u8; 3],
-    //         "0000000000000000000000000000000000000000000000000000000000000001\
-    //          0000000000000000000000000000000000000000000000000000000000000001\
-    //          0000000000000000000000000000000000000000000000000000000000000001",
-    //     )];
-    //     test_encode_ok(tests);
-    // }
+    #[test]
+    fn test_parse_u8_fixed_seq() {
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000001",
+            [1 as u8; 3],
+        )];
+
+        test_parse_ok(tests);
+    }
 
     #[test]
     fn test_parse_str_seq() {
@@ -854,30 +1276,106 @@ mod tests {
         test_parse_ok(tests);
     }
 
-    // #[test]
-    // fn test_write_multiseq() {
-    //     let tests = &[(
-    //         vec![vec!["1", "2"], vec!["3", "4"]],
-    //         "0000000000000000000000000000000000000000000000000000000000000020\
-    //          0000000000000000000000000000000000000000000000000000000000000002\
-    //          0000000000000000000000000000000000000000000000000000000000000040\
-    //          0000000000000000000000000000000000000000000000000000000000000120\
-    //          0000000000000000000000000000000000000000000000000000000000000002\
-    //          0000000000000000000000000000000000000000000000000000000000000040\
-    //          0000000000000000000000000000000000000000000000000000000000000080\
-    //          0000000000000000000000000000000000000000000000000000000000000001\
-    //          3100000000000000000000000000000000000000000000000000000000000000\
-    //          0000000000000000000000000000000000000000000000000000000000000001\
-    //          3200000000000000000000000000000000000000000000000000000000000000\
-    //          0000000000000000000000000000000000000000000000000000000000000002\
-    //          0000000000000000000000000000000000000000000000000000000000000040\
-    //          0000000000000000000000000000000000000000000000000000000000000080\
-    //          0000000000000000000000000000000000000000000000000000000000000001\
-    //          3300000000000000000000000000000000000000000000000000000000000000\
-    //          0000000000000000000000000000000000000000000000000000000000000001\
-    //          3400000000000000000000000000000000000000000000000000000000000000",
-    //     )];
-    //     test_encode_ok(tests);
-    // }
+    #[test]
+    fn test_parse_multiseq() {
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000040\
+             0000000000000000000000000000000000000000000000000000000000000120\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000040\
+             0000000000000000000000000000000000000000000000000000000000000080\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3100000000000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3200000000000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000040\
+             0000000000000000000000000000000000000000000000000000000000000080\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3300000000000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3400000000000000000000000000000000000000000000000000000000000000",
+            vec![
+                vec!["1".to_string(), "2".to_string()],
+                vec!["3".to_string(), "4".to_string()],
+            ],
+        )];
 
+        test_parse_ok(tests);
+    }
+
+    #[test]
+    fn test_parse_simple_struct() {
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000040\
+             0000000000000000000000000000000000000000000000000000000000000080\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3100000000000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3200000000000000000000000000000000000000000000000000000000000000",
+            Simple {
+                value1: "1".to_string(),
+                value2: "2".to_string(),
+            },
+        )];
+        test_parse_ok(tests);
+    }
+
+    #[test]
+    fn test_parse_complex_struct() {
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000040\
+             0000000000000000000000000000000000000000000000000000000000000080\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3100000000000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000040\
+             0000000000000000000000000000000000000000000000000000000000000080\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3200000000000000000000000000000000000000000000000000000000000000\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             3300000000000000000000000000000000000000000000000000000000000000",
+            Complex {
+                value: "1".to_string(),
+                simple: Simple {
+                    value1: "2".to_string(),
+                    value2: "3".to_string(),
+                },
+            },
+        )];
+
+        test_parse_ok(tests);
+    }
+
+    #[test]
+    fn test_write_composed_struct() {
+        let s = "string".to_string();
+        let addr = [1u8; 32];
+        let b = [2u32; 4];
+
+        let tests = &[(
+            Composed {
+                field: vec![vec![(s, (addr.into(), b))]],
+            },
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000040\
+             0000000000000000000000000000000000000000000000000000000000000006\
+             737472696e670000000000000000000000000000000000000000000000000000\
+             0101010101010101010101010101010101010101010101010101010101010101\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000002",
+        )];
+
+        test_encode_ok(tests);
+    }
 }
