@@ -431,10 +431,10 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
     #[inline]
     fn deserialize_newtype_struct<V: de::Visitor<'de>>(
         self,
-        name: &str,
+        _name: &str,
         visitor: V,
     ) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        self.deserialize_seq(visitor)
     }
 
     fn deserialize_seq<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -532,15 +532,15 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        visitor.visit_enum(EnumAccess::new(self))
     }
 
     fn deserialize_identifier<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        self.deserialize_str(visitor)
     }
 
     fn deserialize_ignored_any<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+        self.deserialize_unit(visitor)
     }
 }
 
@@ -589,6 +589,50 @@ impl<'de, 'r, 'a, R: Read + Seek + 'r> de::SeqAccess<'de> for SeqAccess<'r, 'a, 
             Err(err) => Err(err),
             Ok(value) => Ok(Some(value)),
         }
+    }
+}
+
+struct EnumAccess<'r, 'a, R> {
+    de: &'a mut Deserializer<'r, R>,
+}
+
+impl<'r, 'a, R> EnumAccess<'r, 'a, R> {
+    fn new(de: &'a mut Deserializer<'r, R>) -> Self {
+        EnumAccess { de: de }
+    }
+}
+
+impl<'de, 'r, 'a, R: Read + Seek + 'r> de::EnumAccess<'de> for EnumAccess<'r, 'a, R> {
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V: de::DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self)> {
+        let val = seed.deserialize(&mut *self.de)?;
+        Ok((val, self))
+    }
+}
+
+impl<'de, 'r, 'a, R: Read + Seek + 'r> de::VariantAccess<'de> for EnumAccess<'r, 'a, R> {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<()> {
+        de::Deserialize::deserialize(self.de)
+    }
+
+    fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> {
+        seed.deserialize(&mut *self.de)
+    }
+
+    fn tuple_variant<V: de::Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value> {
+        de::Deserializer::deserialize_tuple(self.de, len, visitor)
+    }
+
+    fn struct_variant<V: de::Visitor<'de>>(
+        self,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value> {
+        de::Deserializer::deserialize_struct(self.de, "", fields, visitor)
     }
 }
 
@@ -1350,32 +1394,4 @@ mod tests {
         test_parse_ok(tests);
     }
 
-    #[test]
-    fn test_write_composed_struct() {
-        let s = "string".to_string();
-        let addr = [1u8; 32];
-        let b = [2u32; 4];
-
-        let tests = &[(
-            Composed {
-                field: vec![vec![(s, (addr.into(), b))]],
-            },
-            "0000000000000000000000000000000000000000000000000000000000000020\
-             0000000000000000000000000000000000000000000000000000000000000020\
-             0000000000000000000000000000000000000000000000000000000000000001\
-             0000000000000000000000000000000000000000000000000000000000000020\
-             0000000000000000000000000000000000000000000000000000000000000001\
-             0000000000000000000000000000000000000000000000000000000000000020\
-             0000000000000000000000000000000000000000000000000000000000000040\
-             0000000000000000000000000000000000000000000000000000000000000006\
-             737472696e670000000000000000000000000000000000000000000000000000\
-             0101010101010101010101010101010101010101010101010101010101010101\
-             0000000000000000000000000000000000000000000000000000000000000002\
-             0000000000000000000000000000000000000000000000000000000000000002\
-             0000000000000000000000000000000000000000000000000000000000000002\
-             0000000000000000000000000000000000000000000000000000000000000002",
-        )];
-
-        test_encode_ok(tests);
-    }
 }
