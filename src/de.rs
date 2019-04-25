@@ -8,6 +8,7 @@ use std::{
 };
 
 use super::{
+    custom_de::EthFixedAccess,
     error::{Category, Error, Result, TupleHint},
     eth,
 };
@@ -49,6 +50,7 @@ impl Scope {
 
 pub struct Deserializer<'r, R> {
     tuple_counter: u64,
+    current_custom_deserializer: Option<eth::Fixed>,
     read: &'r mut RefReadSeek<R>,
     tuple_hints: HashMap<u64, BaseType>,
     scope: Vec<Scope>,
@@ -62,6 +64,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
     pub fn with_hints(read: &'r mut RefReadSeek<R>, tuple_hints: HashMap<u64, BaseType>) -> Self {
         Deserializer {
             tuple_counter: 0,
+            current_custom_deserializer: None,
             read: read,
             tuple_hints: tuple_hints,
             scope: Vec::new(),
@@ -202,6 +205,20 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         let res = visitor.visit_seq(DynamicTupleAccess::new(self, len as usize));
         let _ = self.scope.pop().unwrap();
         res
+    }
+
+    fn read_custom_tuple<'de, V: de::Visitor<'de>>(
+        &mut self,
+        offset: usize,
+        _len: usize,
+        t: eth::Fixed,
+        visitor: V,
+    ) -> Result<V::Value> {
+        let _ = self.seek(SeekFrom::Start(offset as u64))?;
+        let mut bytes = vec![0 as u8; 64];
+        let _ = self.must_read(&mut bytes[..])?;
+        let bytes = eth::decode_bytes(&bytes[..], 32)?;
+        visitor.visit_seq(EthFixedAccess::new(bytes, t))
     }
 
     fn peek_uint(&mut self, size: usize) -> Result<u64> {
@@ -431,10 +448,11 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
     #[inline]
     fn deserialize_newtype_struct<V: de::Visitor<'de>>(
         self,
-        _name: &str,
+        name: &str,
         visitor: V,
     ) -> Result<V::Value> {
-        self.deserialize_seq(visitor)
+        self.current_custom_deserializer = eth::Fixed::get(name);
+        self.deserialize_tuple(1, visitor)
     }
 
     fn deserialize_seq<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -473,6 +491,11 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
             }
             None => 0,
         };
+
+        if let Some(t) = self.current_custom_deserializer {
+            self.current_custom_deserializer = None;
+            return self.read_custom_tuple(base, len, t, visitor);
+        }
 
         // for tuples the deserialization is ambiguous. If the user has passed
         // a hint, used the hint to deserialize the tuple with that index
@@ -820,6 +843,7 @@ mod tests {
 
     use super::from_str;
     use crate::error::Result;
+    use oasis_std::types::{Address, H160, H256, U256};
     use serde::{de, ser, Deserialize, Serialize};
     use std::{error::Error, fmt::Debug};
 
@@ -830,6 +854,45 @@ mod tests {
             let v: T = from_str(s).unwrap();
             assert_eq!(v, value.clone());
         }
+    }
+
+    fn gen_u256(n: u64) -> U256 {
+        let mut v = [0 as u8; 32];
+        v[31] = (n & 0x00ff) as u8;
+        v[30] = ((n >> 8) & 0x00ff) as u8;
+        v[29] = ((n >> 16) & 0x00ff) as u8;
+        v[28] = ((n >> 24) & 0x00ff) as u8;
+        v[27] = ((n >> 32) & 0x00ff) as u8;
+        v[26] = ((n >> 40) & 0x00ff) as u8;
+        v[25] = ((n >> 48) & 0x00ff) as u8;
+        v[24] = ((n >> 56) & 0x00ff) as u8;
+        U256::from(v)
+    }
+
+    fn gen_h256(n: u64) -> H256 {
+        let mut v = [0 as u8; 32];
+        v[31] = (n & 0x00ff) as u8;
+        v[30] = ((n >> 8) & 0x00ff) as u8;
+        v[29] = ((n >> 16) & 0x00ff) as u8;
+        v[28] = ((n >> 24) & 0x00ff) as u8;
+        v[27] = ((n >> 32) & 0x00ff) as u8;
+        v[26] = ((n >> 40) & 0x00ff) as u8;
+        v[25] = ((n >> 48) & 0x00ff) as u8;
+        v[24] = ((n >> 56) & 0x00ff) as u8;
+        H256::from(v)
+    }
+
+    fn gen_h160(n: u64) -> H160 {
+        let mut v = [0 as u8; 20];
+        v[19] = (n & 0x00ff) as u8;
+        v[18] = ((n >> 8) & 0x00ff) as u8;
+        v[17] = ((n >> 16) & 0x00ff) as u8;
+        v[16] = ((n >> 24) & 0x00ff) as u8;
+        v[15] = ((n >> 32) & 0x00ff) as u8;
+        v[14] = ((n >> 40) & 0x00ff) as u8;
+        v[13] = ((n >> 48) & 0x00ff) as u8;
+        v[12] = ((n >> 56) & 0x00ff) as u8;
+        H160::from(v)
     }
 
     #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -855,6 +918,114 @@ mod tests {
                 Err(err) => assert_eq!(err.description().to_string(), expected.to_string()),
             }
         }
+    }
+
+    #[test]
+    fn test_parse_h160() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                gen_h160(0),
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000002",
+                gen_h160(2),
+            ),
+            (
+                "000000000000000000000000000000000000000000000000000000000000000f",
+                gen_h160(15),
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000010",
+                gen_h160(16),
+            ),
+            (
+                "00000000000000000000000000000000000000000000000000000000000003e8",
+                gen_h160(1_000),
+            ),
+            (
+                "00000000000000000000000000000000000000000000000000000000000186a0",
+                gen_h160(100_000),
+            ),
+            (
+                "000000000000000000000000000000000000000000000000ffffffffffffffff",
+                gen_h160(u64::max_value()),
+            ),
+        ];
+
+        test_parse_ok(tests);
+    }
+
+    #[test]
+    fn test_parse_h256() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                gen_h256(0),
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000002",
+                gen_h256(2),
+            ),
+            (
+                "000000000000000000000000000000000000000000000000000000000000000f",
+                gen_h256(15),
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000010",
+                gen_h256(16),
+            ),
+            (
+                "00000000000000000000000000000000000000000000000000000000000003e8",
+                gen_h256(1_000),
+            ),
+            (
+                "00000000000000000000000000000000000000000000000000000000000186a0",
+                gen_h256(100_000),
+            ),
+            (
+                "000000000000000000000000000000000000000000000000ffffffffffffffff",
+                gen_h256(u64::max_value()),
+            ),
+        ];
+
+        test_parse_ok(tests);
+    }
+
+    #[test]
+    fn test_parse_u256() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                gen_u256(0),
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000002",
+                gen_u256(2),
+            ),
+            (
+                "000000000000000000000000000000000000000000000000000000000000000f",
+                gen_u256(15),
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000010",
+                gen_u256(16),
+            ),
+            (
+                "00000000000000000000000000000000000000000000000000000000000003e8",
+                gen_u256(1_000),
+            ),
+            (
+                "00000000000000000000000000000000000000000000000000000000000186a0",
+                gen_u256(100_000),
+            ),
+            (
+                "000000000000000000000000000000000000000000000000ffffffffffffffff",
+                gen_u256(u64::max_value()),
+            ),
+        ];
+
+        test_parse_ok(tests);
     }
 
     #[test]

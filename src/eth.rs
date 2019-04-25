@@ -147,3 +147,21 @@ fn pad_i64(value: i64) -> [u8; 32] {
     padded[31] = value as u8;
     padded
 }
+
+#[derive(Debug, Clone, Copy)]
+pub enum Fixed {
+    H256,
+    H160,
+    U256,
+}
+
+impl Fixed {
+    pub fn get(name: &str) -> Option<Fixed> {
+        match name {
+            "H256" => Some(Fixed::H256),
+            "H160" => Some(Fixed::H160),
+            "U256" => Some(Fixed::U256),
+            _ => None,
+        }
+    }
+}

@@ -13,7 +13,7 @@ pub struct Serializer<W> {
 
     // current_custom_type is used to set the current state of any type whose serialization
     // is implemented in the serializer.
-    current_custom_serializer: Option<custom_ser::SerializerType>,
+    current_custom_serializer: Option<eth::Fixed>,
 }
 
 impl<W: io::Write> Serializer<W> {
@@ -145,7 +145,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         name: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
-        self.current_custom_serializer = custom_ser::SerializerType::get(name);
+        self.current_custom_serializer = eth::Fixed::get(name);
         value.serialize(self)
     }
 
@@ -156,7 +156,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         _variant: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
-        self.current_custom_serializer = custom_ser::SerializerType::get(name);
+        self.current_custom_serializer = eth::Fixed::get(name);
         value.serialize(self)
     }
 
@@ -173,17 +173,20 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     }
 
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple> {
-        match &self.current_custom_serializer {
+        let custom_serializer = self.current_custom_serializer;
+        self.current_custom_serializer = None;
+
+        match custom_serializer {
             Some(t) => match t {
-                custom_ser::SerializerType::H256 => Ok(RootCompound::BigInteger {
+                eth::Fixed::H256 => Ok(RootCompound::BigInteger {
                     writer: self,
                     ser: custom_ser::BasicEthSerializer::new_hash(32),
                 }),
-                custom_ser::SerializerType::H160 => Ok(RootCompound::BigInteger {
+                eth::Fixed::H160 => Ok(RootCompound::BigInteger {
                     writer: self,
                     ser: custom_ser::BasicEthSerializer::new_hash(20),
                 }),
-                custom_ser::SerializerType::U256 => Ok(RootCompound::BigInteger {
+                eth::Fixed::U256 => Ok(RootCompound::BigInteger {
                     writer: self,
                     ser: custom_ser::BasicEthSerializer::new_uint(32),
                 }),
@@ -203,11 +206,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         _name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct> {
-        let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(RootCompound::Standard {
-            writer: self,
-            ser: NodeSerializer::new(root),
-        })
+        self.serialize_tuple(len)
     }
 
     fn serialize_tuple_variant(
@@ -217,11 +216,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         _variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
-        let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(RootCompound::Standard {
-            writer: self,
-            ser: NodeSerializer::new(root),
-        })
+        self.serialize_tuple(len)
     }
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
@@ -229,11 +224,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
     }
 
     fn serialize_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
-        let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(RootCompound::Standard {
-            writer: self,
-            ser: NodeSerializer::new(root),
-        })
+        self.serialize_tuple(len)
     }
 
     fn serialize_struct_variant(
@@ -243,11 +234,7 @@ impl<'a, W: io::Write> ser::Serializer for &'a mut Serializer<W> {
         _variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStruct> {
-        let root = Node::Tuple(Vec::with_capacity(len));
-        Ok(RootCompound::Standard {
-            writer: self,
-            ser: NodeSerializer::new(root),
-        })
+        self.serialize_tuple(len)
     }
 }
 
@@ -544,7 +531,7 @@ pub struct NodeSerializer {
 
     // current_custom_type is used to set the current state of any type whose serialization
     // is implemented in the serializer.
-    current_custom_serializer: Option<custom_ser::SerializerType>,
+    current_custom_serializer: Option<eth::Fixed>,
 }
 
 impl NodeSerializer {
@@ -682,7 +669,7 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
         name: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
-        self.current_custom_serializer = custom_ser::SerializerType::get(name);
+        self.current_custom_serializer = eth::Fixed::get(name);
         value.serialize(self)
     }
 
@@ -693,7 +680,7 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
         _variant: &'static str,
         value: &T,
     ) -> Result<Self::Ok> {
-        self.current_custom_serializer = custom_ser::SerializerType::get(name);
+        self.current_custom_serializer = eth::Fixed::get(name);
         value.serialize(self)
     }
 
@@ -712,15 +699,15 @@ impl<'a> ser::Serializer for &'a mut NodeSerializer {
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple> {
         match &self.current_custom_serializer {
             Some(t) => match t {
-                custom_ser::SerializerType::H256 => Ok(NodeCompound::BigInteger {
+                eth::Fixed::H256 => Ok(NodeCompound::BigInteger {
                     base: self,
                     ser: custom_ser::BasicEthSerializer::new_hash(32),
                 }),
-                custom_ser::SerializerType::H160 => Ok(NodeCompound::BigInteger {
+                eth::Fixed::H160 => Ok(NodeCompound::BigInteger {
                     base: self,
                     ser: custom_ser::BasicEthSerializer::new_hash(20),
                 }),
-                custom_ser::SerializerType::U256 => Ok(NodeCompound::BigInteger {
+                eth::Fixed::U256 => Ok(NodeCompound::BigInteger {
                     base: self,
                     ser: custom_ser::BasicEthSerializer::new_uint(32),
                 }),
