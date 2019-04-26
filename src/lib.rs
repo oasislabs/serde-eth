@@ -1,3 +1,4 @@
+mod serde_tests;
 mod custom_de;
 mod custom_ser;
 pub mod de;
