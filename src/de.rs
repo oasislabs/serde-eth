@@ -13,12 +13,13 @@ use super::{
     eth,
 };
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum BaseType {
     Static,
     Dynamic,
 }
 
+#[derive(Debug)]
 pub struct Scope {
     offset: usize,
     read_head: usize,
@@ -80,6 +81,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
     }
 
     fn seek(&mut self, from: SeekFrom) -> Result<u64> {
+        println!("SEEK TO");
         self.read.seek(from)
     }
 
@@ -96,6 +98,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         }
 
         if total_read_bytes == bytes.len() {
+            println!("BYTES: {:?}", bytes);
             Ok(())
         } else {
             Err(Error::message("insufficient bytes read from reader"))
@@ -142,7 +145,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
 
     fn read_byte_array(&mut self) -> Result<Vec<u8>> {
         let bytes_offset = self.read_uint_head(64)?;
-
+        println!("STRING OFFSET: {}", bytes_offset);
         let offset = match self.pop_scope() {
             Some(mut scope) => {
                 let offset = (bytes_offset << 1) + scope.offset as u64;
@@ -156,6 +159,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         let _ = self.seek(SeekFrom::Start(offset as u64))?;
 
         let len = self.read_uint_tail(64)?;
+        println!("STRING LEN: {}", bytes_offset);
         let read_bytes = len << 1;
 
         // only read multiple of 64 bytes
@@ -183,10 +187,27 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         len: usize,
         visitor: V,
     ) -> Result<V::Value> {
-        let curr = self.seek(SeekFrom::Start(offset as u64))?;
-        self.push_scope(Scope::new(curr as usize));
+        let offset = match self.pop_scope() {
+            Some(scope) => {
+                let read_head = scope.read_head;
+                self.push_scope(scope);
+                offset + read_head
+            }
+            None => offset,
+        };
+
+        self.push_scope(Scope::new(offset as usize));
         let res = visitor.visit_seq(StaticTupleAccess::new(self, len as usize));
-        let _ = self.scope.pop().unwrap();
+        let scope = self.scope.pop().unwrap();
+        let _ = self.seek(SeekFrom::Current(scope.read_tail as i64))?;
+
+        match self.pop_scope() {
+            Some(mut s) => {
+                s.read_head += scope.read_head;
+                self.push_scope(s);
+            }
+            None => {}
+        }
         res
     }
 
@@ -200,21 +221,39 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         let offset = (tuple_offset << 1) + offset as u64;
 
         let curr = self.seek(SeekFrom::Start(offset as u64))?;
-        self.push_scope(Scope::new(curr as usize));
-
+        let scope = Scope::new(curr as usize);
+        self.push_scope(scope);
         let res = visitor.visit_seq(DynamicTupleAccess::new(self, len as usize));
-        let _ = self.scope.pop().unwrap();
+        let scope = self.scope.pop().unwrap();
+        let _ = self.seek(SeekFrom::Current(scope.read_tail as i64))?;
+
+        match self.pop_scope() {
+            Some(mut s) => {
+                s.read_head += scope.read_head;
+                self.push_scope(s);
+            }
+            None => {}
+        }
+
         res
     }
 
     fn read_custom_tuple<'de, V: de::Visitor<'de>>(
         &mut self,
-        offset: usize,
+        _offset: usize,
         _len: usize,
         t: eth::Fixed,
         visitor: V,
     ) -> Result<V::Value> {
-        let _ = self.seek(SeekFrom::Start(offset as u64))?;
+        match self.pop_scope() {
+            Some(mut scope) => {
+                scope.types.push(BaseType::Static);
+                scope.read_head += 64;
+                self.push_scope(scope);
+            }
+            None => {}
+        }
+
         let mut bytes = vec![0 as u8; 64];
         let _ = self.must_read(&mut bytes[..])?;
         let bytes = eth::decode_bytes(&bytes[..], 32)?;
@@ -598,7 +637,7 @@ impl<'de, 'r, 'a, R: Read + Seek + 'r> de::SeqAccess<'de> for SeqAccess<'r, 'a, 
         let res = seed.deserialize(&mut *self.de);
 
         let scope = self.de.pop_scope().unwrap();
-        let new_offset = scope.offset + 64 * self.count;
+        let new_offset = scope.offset + scope.read_head;
 
         if self.count < self.len {
             // if there are still elements in the sequence, seek back to the next
@@ -690,11 +729,12 @@ impl<'de, 'r, 'a, R: Read + Seek + 'r> de::SeqAccess<'de> for StaticTupleAccess<
         let res = seed.deserialize(&mut *self.de);
 
         let scope = self.de.pop_scope().unwrap();
-        let new_offset = scope.offset + 64 * self.count;
+        let new_offset = scope.offset + scope.read_head;
 
         if self.count < self.len {
             // if there are still elements in the sequence, seek back to the next
             // items's head
+            println!("NEXT STATIC: {}", new_offset);
             let _ = self.de.seek(SeekFrom::Start(new_offset as u64))?;
         }
 
@@ -767,10 +807,12 @@ impl<'de, 'r, 'a, R: Read + Seek + 'a> de::SeqAccess<'de> for DynamicTupleAccess
         }
 
         let scope = self.de.pop_scope().unwrap();
-        let new_offset = scope.offset + 64 * self.count;
+        let new_offset = scope.offset + scope.read_head;
+
         if self.count < self.len {
             // if there are still elements in the sequence, seek back to the next
             // items's head
+            println!("NEXT DYNAMIC: {}", new_offset);
             let _ = self.de.seek(SeekFrom::Start(new_offset as u64))?;
         }
 
@@ -824,6 +866,8 @@ pub fn from_reader<'de, R: Read + Seek, T: de::Deserialize<'de>>(read: R) -> Res
                         BaseType::Static
                     },
                 );
+
+                let _ = read.seek(SeekFrom::Start(0))?;
                 continue;
             }
             _ => {
@@ -843,7 +887,7 @@ mod tests {
 
     use super::from_str;
     use crate::error::Result;
-    use oasis_std::types::{Address, H160, H256, U256};
+    use oasis_std::types::{H160, H256, U256};
     use serde::{de, ser, Deserialize, Serialize};
     use std::{error::Error, fmt::Debug};
 
@@ -905,6 +949,16 @@ mod tests {
     struct Complex {
         value: String,
         simple: Simple,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    struct Composed {
+        field: Vec<Vec<(String, (H256, [u32; 4]))>>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    struct Composed2 {
+        field: Vec<Vec<((H256, [u32; 4]), String)>>,
     }
 
     fn test_parse_error<T: Clone + Debug + PartialEq + ser::Serialize + de::DeserializeOwned>(
@@ -1565,4 +1619,61 @@ mod tests {
         test_parse_ok(tests);
     }
 
+    #[test]
+    fn test_parse_composed_struct() {
+        let s = "string".to_string();
+        let addr = [1u8; 32];
+        let b = [2u32; 4];
+
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             00000000000000000000000000000000000000000000000000000000000000c0\
+             0101010101010101010101010101010101010101010101010101010101010101\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000006\
+             737472696e670000000000000000000000000000000000000000000000000000",
+            Composed {
+                field: vec![vec![(s, (addr.into(), b))]],
+            },
+        )];
+
+        test_parse_ok(tests);
+    }
+
+    #[test]
+    fn test_parse_composed2_struct() {
+        let s = "string".to_string();
+        let addr = [1u8; 32];
+        let b = [2u32; 4];
+
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000020\
+             0101010101010101010101010101010101010101010101010101010101010101\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             0000000000000000000000000000000000000000000000000000000000000002\
+             00000000000000000000000000000000000000000000000000000000000000c0\
+             0000000000000000000000000000000000000000000000000000000000000006\
+             737472696e670000000000000000000000000000000000000000000000000000",
+            Composed2 {
+                field: vec![vec![((addr.into(), b), s)]],
+            },
+        )];
+
+        test_parse_ok(tests);
+    }
 }
