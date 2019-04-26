@@ -35,8 +35,15 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
         Err(Error::not_implemented())
     }
 
-    fn deserialize_i8<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+    fn deserialize_i8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        match self.serializer_type {
+            Fixed::U256 => panic!("received i8 when deserializing U256"),
+            Fixed::H256 | Fixed::H160 => {
+                let value = self.content[self.offset as usize];
+                self.offset += self.offset_sign;
+                visitor.visit_i8(value as i8)
+            }
+        }
     }
 
     fn deserialize_i16<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
