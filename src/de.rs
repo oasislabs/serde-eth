@@ -81,7 +81,6 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
     }
 
     fn seek(&mut self, from: SeekFrom) -> Result<u64> {
-        println!("SEEK TO");
         self.read.seek(from)
     }
 
@@ -98,7 +97,6 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         }
 
         if total_read_bytes == bytes.len() {
-            println!("BYTES: {:?}", bytes);
             Ok(())
         } else {
             Err(Error::message("insufficient bytes read from reader"))
@@ -145,7 +143,6 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
 
     fn read_byte_array(&mut self) -> Result<Vec<u8>> {
         let bytes_offset = self.read_uint_head(64)?;
-        println!("STRING OFFSET: {}", bytes_offset);
         let offset = match self.pop_scope() {
             Some(mut scope) => {
                 let offset = (bytes_offset << 1) + scope.offset as u64;
@@ -159,7 +156,6 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         let _ = self.seek(SeekFrom::Start(offset as u64))?;
 
         let len = self.read_uint_tail(64)?;
-        println!("STRING LEN: {}", bytes_offset);
         let read_bytes = len << 1;
 
         // only read multiple of 64 bytes
@@ -734,7 +730,6 @@ impl<'de, 'r, 'a, R: Read + Seek + 'r> de::SeqAccess<'de> for StaticTupleAccess<
         if self.count < self.len {
             // if there are still elements in the sequence, seek back to the next
             // items's head
-            println!("NEXT STATIC: {}", new_offset);
             let _ = self.de.seek(SeekFrom::Start(new_offset as u64))?;
         }
 
@@ -812,7 +807,6 @@ impl<'de, 'r, 'a, R: Read + Seek + 'a> de::SeqAccess<'de> for DynamicTupleAccess
         if self.count < self.len {
             // if there are still elements in the sequence, seek back to the next
             // items's head
-            println!("NEXT DYNAMIC: {}", new_offset);
             let _ = self.de.seek(SeekFrom::Start(new_offset as u64))?;
         }
 
