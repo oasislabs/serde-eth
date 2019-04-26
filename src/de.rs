@@ -103,18 +103,33 @@ pub struct Deserializer<'r, R> {
     scope: Vec<Scope>,
 }
 
+pub struct DeserializerProperties {
+    tuple_hints: HashMap<u64, BaseType>,
+    max_size: u64,
+}
+
 impl<'r, R: Read + Seek> Deserializer<'r, R> {
     pub fn new(read: &'r mut RefReadSeek<R>) -> Self {
-        Deserializer::with_hints(read, HashMap::new())
+        Deserializer::with_props(
+            read,
+            DeserializerProperties {
+                tuple_hints: HashMap::new(),
+                max_size: 0,
+            },
+        )
     }
 
-    pub fn with_hints(read: &'r mut RefReadSeek<R>, tuple_hints: HashMap<u64, BaseType>) -> Self {
+    pub fn with_props(read: &'r mut RefReadSeek<R>, props: DeserializerProperties) -> Self {
         Deserializer {
-            remaining_size: 1 << 24, // 16MB
+            remaining_size: if props.max_size == 0 {
+                1 << 24
+            } else {
+                props.max_size
+            },
             tuple_counter: 0,
             current_custom_deserializer: None,
             read,
-            tuple_hints: tuple_hints,
+            tuple_hints: props.tuple_hints,
             scope: Vec::new(),
         }
     }
@@ -875,7 +890,13 @@ pub fn from_reader<'de, R: Read + Seek, T: de::Deserialize<'de>>(read: R) -> Res
     let mut read = RefReadSeek { read: read };
 
     loop {
-        let mut de = Deserializer::with_hints(&mut read, hints.clone());
+        let mut de = Deserializer::with_props(
+            &mut read,
+            DeserializerProperties {
+                tuple_hints: hints.clone(),
+                max_size: 0,
+            },
+        );
         let res = de::Deserialize::deserialize(&mut de);
         match res {
             Err(err) => {
