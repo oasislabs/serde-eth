@@ -45,6 +45,62 @@ impl Scope {
     }
 }
 
+macro_rules! scoped {
+    ( $de: expr, $t: expr, $fn: expr ) => {{
+        let offset = if let Some(mut scope) = $de.pop_scope() {
+            let offset = scope.offset;
+            scope.types.push($t);
+            $de.push_scope(scope);
+            offset
+        } else {
+            0
+        };
+
+        let (read_head, read_tail, res) = $fn(offset as u64)?;
+
+        if let Some(mut scope) = $de.pop_scope() {
+            scope.read_head += read_head;
+            scope.read_tail += read_tail;
+            $de.push_scope(scope);
+        }
+
+        Ok(res)
+    }};
+}
+
+macro_rules! static_scope {
+    ( $de: expr, $fn: expr ) => {{
+        scoped![$de, BaseType::Static, |_offset| {
+            let offset = $de.seek(SeekFrom::Current(0))?;
+            $de.push_scope(Scope::new(offset as usize));
+
+            let res = $fn()?;
+
+            let scope = $de.scope.pop().unwrap();
+            $de.seek(SeekFrom::Start(offset + scope.read_head as u64))?;
+
+            Ok((scope.read_head + scope.read_tail, 0, res))
+        }]
+    }};
+}
+
+macro_rules! dynamic_scope {
+    ( $de: expr, $fn: expr ) => {{
+        scoped![$de, BaseType::Dynamic, |offset| {
+            let content_offset = $de.read_uint_head(64)?;
+            let offset = offset + (content_offset << 1);
+            let offset = $de.seek(SeekFrom::Start(offset as u64))?;
+            let len = $de.read_uint_tail(64)?;
+            $de.push_scope(Scope::new(64 + offset as usize));
+
+            let res = $fn(len)?;
+            let scope = $de.scope.pop().unwrap();
+
+            Ok((0, scope.read_tail + scope.read_head, res))
+        }]
+    }};
+}
+
 macro_rules! array_stack {
     ( $de:expr, $x:expr ) => {{
         if ($de.remaining_size as usize) < $x {
@@ -146,25 +202,24 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         self.read.seek(from)
     }
 
-    fn must_read(&mut self, bytes: &mut [u8]) -> Result<()> {
+    fn read_exact_to_end(&mut self, bytes: &mut [u8]) -> Result<()> {
         if self.remaining_size < bytes.len() as u64 {
             return Err(Error::message(
                 "deserializer does not have remaining space to parse more data",
             ));
         }
 
-        let mut total_read_bytes: usize = 0;
+        let mut total_bytes_read = 0usize;
 
-        while total_read_bytes < bytes.len() {
-            let read_bytes = self.read.read(&mut bytes[total_read_bytes..])?;
-
-            if read_bytes == 0 {
+        while total_bytes_read < bytes.len() {
+            let bytes_read = self.read.read(&mut bytes[total_bytes_read..])?;
+            if bytes_read == 0 {
                 break;
             }
-            total_read_bytes += read_bytes;
+            total_bytes_read += bytes_read;
         }
 
-        if total_read_bytes == bytes.len() {
+        if total_bytes_read == bytes.len() {
             self.remaining_size -= bytes.len() as u64;
             Ok(())
         } else {
@@ -173,10 +228,11 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
     }
 
     pub fn end(&mut self) -> Result<()> {
-        let mut bytes = [0 as u8; 1];
-        let res = self.must_read(&mut bytes);
+        let mut bytes = [0u8; 1];
+        let res = self.read_exact_to_end(&mut bytes);
 
         match res {
+			      // Being able to read any additional bytes means that stream was not at end.
             Ok(_) => Err(Error::parsing("input has not been processed completely")),
             Err(err) => match err.classify() {
                 Category::Data => Ok(()),
@@ -195,198 +251,140 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
 
         match std::str::from_utf8(&bytes[..]) {
             Err(_) => Err(Error::parsing("parsed byte array cannot decode to a char")),
-            Ok(s) => match s.chars().next() {
-                Some(c) => Ok(c),
-                None => Err(Error::parsing("parsed byte array cannot decode to a char")),
-            },
+            Ok(s) => s
+                .chars()
+                .next()
+                .ok_or_else(|| Error::parsing("parsed byte array cannot decode to a char")),
         }
     }
 
     fn read_str(&mut self) -> Result<String> {
         let bytes = self.read_byte_array()?;
         match std::str::from_utf8(&bytes[..]) {
-            Err(_) => Err(Error::parsing("parsed byte array cannot decode to a char")),
             Ok(s) => Ok(s.to_string()),
+            Err(_) => Err(Error::parsing("parsed byte array cannot decode to a char")),
         }
     }
 
     fn read_byte_array(&mut self) -> Result<Vec<u8>> {
-        let bytes_offset = self.read_uint_head(64)?;
-        let offset = match self.pop_scope() {
-            Some(mut scope) => {
-                let offset = (bytes_offset << 1) + scope.offset as u64;
-                scope.types.push(BaseType::Dynamic);
-                self.push_scope(scope);
-                offset
-            }
-            None => bytes_offset << 1,
+        dynamic_scope![self, |len| {
+            let bytes_read = len << 1;
+
+            // only read multiple of 64 bytes
+            let base = ((bytes_read >> 6) << 6) as u64;
+            let remain = if bytes_read - base == 0u64 { 0 } else { 1 };
+            let read_len = base + (remain << 6);
+            let mut read_data = vec_heap![self, (read_len as usize)];
+            self.read_bytes_tail(&mut read_data[..])?;
+
+            eth::decode_bytes(&read_data, len as usize)
+        }]
+    }
+
+    fn read_bytes_tail(&mut self, bytes: &mut [u8]) -> Result<()> {
+        self.read_exact_to_end(bytes)?;
+
+        if let Some(mut scope) = self.pop_scope() {
+            scope.read_tail += bytes.len();
+            self.push_scope(scope);
         };
 
-        let _ = self.seek(SeekFrom::Start(offset as u64))?;
+        Ok(())
+    }
 
-        let len = self.read_uint_tail(64)?;
-        let read_bytes = len << 1;
+    fn read_bytes_head(&mut self, bytes: &mut [u8]) -> Result<()> {
+        self.read_exact_to_end(bytes)?;
 
-        // only read multiple of 64 bytes
-        let base = (read_bytes >> 6) << 6;
-        let remain = if read_bytes - base == 0 { 0 } else { 1 };
-        let read_len = base + (remain << 6);
-        let mut read_data = vec_heap![self, (read_len as usize)];
-        self.must_read(&mut read_data[..])?;
-
-        // keep track of how much data is read for a particular scope
-        match self.pop_scope() {
-            Some(mut scope) => {
-                scope.read_tail += 64 + read_len as usize;
-                self.push_scope(scope);
-            }
-            None => {}
+        if let Some(mut scope) = self.pop_scope() {
+            scope.read_head += bytes.len();
+            self.push_scope(scope);
         };
 
-        eth::decode_bytes(&read_data, len as usize)
+        Ok(())
     }
 
     fn read_static_size_tuple<'de, V: de::Visitor<'de>>(
         &mut self,
-        _offset: usize,
         len: usize,
         visitor: V,
     ) -> Result<V::Value> {
         // the cursor of the reader should already be at the beginning
         // of the tuple. Since a static tuple does not have offsets,
         // we can just take that address as offset
-        let offset = self.seek(SeekFrom::Current(0))?;
-
-        self.push_scope(Scope::new(offset as usize));
-        let res = visitor.visit_seq(StaticTupleAccess::new(self, len as usize));
-        let scope = self.scope.pop().unwrap();
-        let _ = self.seek(SeekFrom::Current(scope.read_head as i64))?;
-
-        match self.pop_scope() {
-            Some(mut s) => {
-                s.read_head += scope.read_head;
-                self.push_scope(s);
-            }
-            None => {}
-        }
-        res
+        static_scope![self, || visitor
+            .visit_seq(StaticTupleAccess::new(self, len as usize))]
     }
 
     fn read_dynamic_size_tuple<'de, V: de::Visitor<'de>>(
         &mut self,
-        offset: usize,
         len: usize,
         visitor: V,
     ) -> Result<V::Value> {
-        let tuple_offset = self.read_uint_head(64)?;
-        let offset = (tuple_offset << 1) + offset as u64;
+        // the implementation of this is almost as a dynamic_scope,
+        // but a tuple does not have a len parameter in its binary
+        // representation
+        scoped![self, BaseType::Dynamic, |offset| {
+            let tuple_offset = self.read_uint_head(64)?;
+            let offset = (tuple_offset << 1) + offset as u64;
 
-        let curr = self.seek(SeekFrom::Start(offset as u64))?;
-        let scope = Scope::new(curr as usize);
-        self.push_scope(scope);
-        let res = visitor.visit_seq(DynamicTupleAccess::new(self, len as usize));
-        let scope = self.scope.pop().unwrap();
-        let _ = self.seek(SeekFrom::Current(scope.read_tail as i64))?;
+            let curr = self.seek(SeekFrom::Start(offset as u64))?;
+            let scope = Scope::new(curr as usize);
+            self.push_scope(scope);
+            let res = visitor.visit_seq(DynamicTupleAccess::new(self, len as usize))?;
+            let scope = self.scope.pop().unwrap();
+            self.seek(SeekFrom::Current(scope.read_tail as i64))?;
 
-        match self.pop_scope() {
-            Some(mut s) => {
-                s.read_head += scope.read_head;
-                self.push_scope(s);
-            }
-            None => {}
-        }
-
-        res
+            Ok((scope.read_head, 0, res))
+        }]
     }
 
     fn read_custom_tuple<'de, V: de::Visitor<'de>>(
         &mut self,
-        _offset: usize,
         _len: usize,
         t: eth::Fixed,
         visitor: V,
     ) -> Result<V::Value> {
-        match self.pop_scope() {
-            Some(mut scope) => {
-                scope.types.push(BaseType::Static);
-                scope.read_head += 64;
-                self.push_scope(scope);
-            }
-            None => {}
-        }
-
-        let mut bytes = array_stack![self, 64];
-        let _ = self.must_read(&mut bytes[..])?;
-        let bytes = eth::decode_bytes(&bytes[..], 32)?;
-        visitor.visit_seq(EthFixedAccess::new(bytes, t))
+        static_scope![self, || {
+            let mut bytes = array_stack![self, 64];
+            self.read_bytes_head(&mut bytes[..])?;
+            let bytes = eth::decode_bytes(&bytes[..], 32)?;
+            visitor.visit_seq(EthFixedAccess::new(bytes, t))
+        }]
     }
 
     fn peek_uint(&mut self, size: usize) -> Result<u64> {
         let mut bytes = array_stack![self, 64];
-        self.must_read(&mut bytes)?;
+        self.read_exact_to_end(&mut bytes)?;
         self.seek(SeekFrom::Current(-64))?;
         eth::decode_uint(&bytes, size)
     }
 
-    fn deserialize_uint(&mut self, size: usize) -> Result<u64> {
-        match self.pop_scope() {
-            Some(mut scope) => {
-                scope.types.push(BaseType::Static);
-                self.push_scope(scope);
-            }
-            None => {}
-        }
-
-        return self.read_uint_head(size);
-    }
-
-    fn deserialize_int(&mut self, size: usize) -> Result<i64> {
-        match self.pop_scope() {
-            Some(mut scope) => {
-                scope.types.push(BaseType::Static);
-                self.push_scope(scope);
-            }
-            None => {}
-        }
-
-        return self.read_int_head(size);
-    }
-
     fn read_uint_head(&mut self, size: usize) -> Result<u64> {
         let mut bytes = array_stack![self, 64];
-        self.must_read(&mut bytes)?;
-        match self.pop_scope() {
-            Some(mut scope) => {
-                scope.read_head += 64;
-                self.push_scope(scope);
-            }
-            None => {}
+        self.read_exact_to_end(&mut bytes)?;
+        if let Some(mut scope) = self.pop_scope() {
+            scope.read_head += 64;
+            self.push_scope(scope);
         };
         eth::decode_uint(&bytes, size)
     }
 
     fn read_uint_tail(&mut self, size: usize) -> Result<u64> {
         let mut bytes = array_stack![self, 64];
-        self.must_read(&mut bytes)?;
-        match self.pop_scope() {
-            Some(mut scope) => {
-                scope.read_tail += 64;
-                self.push_scope(scope);
-            }
-            None => {}
+        self.read_exact_to_end(&mut bytes)?;
+        if let Some(mut scope) = self.pop_scope() {
+            scope.read_tail += 64;
+            self.push_scope(scope);
         };
         eth::decode_uint(&bytes, size)
     }
 
     fn read_int_head(&mut self, size: usize) -> Result<i64> {
         let mut bytes = array_stack![self, 64];
-        self.must_read(&mut bytes)?;
-        match self.pop_scope() {
-            Some(mut scope) => {
-                scope.read_head += 64;
-                self.push_scope(scope);
-            }
-            None => {}
+        self.read_exact_to_end(&mut bytes)?;
+        if let Some(mut scope) = self.pop_scope() {
+            scope.read_head += 64;
+            self.push_scope(scope);
         };
         eth::decode_int(&bytes, size)
     }
@@ -395,64 +393,73 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
 impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer<'r, R> {
     type Error = Error;
 
-    #[inline]
     fn deserialize_any<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
         Err(Error::not_implemented())
     }
 
     fn deserialize_bool<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        match self.pop_scope() {
-            Some(mut scope) => {
-                scope.types.push(BaseType::Static);
-                self.push_scope(scope);
-            }
-            None => {}
-        }
-
-        let mut bytes = array_stack![self, 64];
-        self.must_read(&mut bytes)?;
-        let value = eth::decode_bool(&bytes)?;
-        visitor.visit_bool(value)
+        static_scope![self, || {
+            let mut bytes = array_stack![self, 64];
+            self.read_bytes_head(&mut bytes)?;
+            let value = eth::decode_bool(&bytes)?;
+            visitor.visit_bool(value)
+        }]
     }
 
     fn deserialize_i8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.deserialize_int(8)?;
-        visitor.visit_i8(value as i8)
+        static_scope![self, || {
+            let value = self.read_int_head(8)?;
+            visitor.visit_i8(value as i8)
+        }]
     }
 
     fn deserialize_i16<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.deserialize_int(16)?;
-        visitor.visit_i16(value as i16)
+        static_scope![self, || {
+            let value = self.read_int_head(16)?;
+            visitor.visit_i16(value as i16)
+        }]
     }
 
     fn deserialize_i32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.deserialize_int(32)?;
-        visitor.visit_i32(value as i32)
+        static_scope![self, || {
+            let value = self.read_int_head(32)?;
+            visitor.visit_i32(value as i32)
+        }]
     }
 
     fn deserialize_i64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.deserialize_int(64)?;
-        visitor.visit_i64(value as i64)
+        static_scope![self, || {
+            let value = self.read_int_head(64)?;
+            visitor.visit_i64(value as i64)
+        }]
     }
 
     fn deserialize_u8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.deserialize_uint(8)?;
-        visitor.visit_u8(value as u8)
+        static_scope![self, || {
+            let value = self.read_uint_head(8)?;
+            visitor.visit_u8(value as u8)
+        }]
     }
 
     fn deserialize_u16<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.deserialize_uint(16)?;
-        visitor.visit_u16(value as u16)
+        static_scope![self, || {
+            let value = self.read_uint_head(16)?;
+            visitor.visit_u16(value as u16)
+        }]
     }
 
     fn deserialize_u32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.deserialize_uint(32)?;
-        visitor.visit_u32(value as u32)
+        static_scope![self, || {
+            let value = self.read_uint_head(32)?;
+            visitor.visit_u32(value as u32)
+        }]
     }
 
     fn deserialize_u64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let value = self.deserialize_uint(64)?;
-        visitor.visit_u64(value as u64)
+        static_scope![self, || {
+            let value = self.read_uint_head(64)?;
+            visitor.visit_u64(value as u64)
+        }]
     }
 
     fn deserialize_f32<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
@@ -483,41 +490,24 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
         visitor.visit_bytes(&b[..])
     }
 
-    #[inline]
     fn deserialize_byte_buf<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         let b = self.read_byte_array()?;
         visitor.visit_byte_buf(b)
     }
 
-    #[inline]
     fn deserialize_option<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         // we expect an option to be serialized as a dynamic sized array that can either
         // have 1 element or 0.
-        let base = match self.pop_scope() {
-            Some(mut scope) => {
-                let offset = scope.offset;
-                scope.types.push(BaseType::Dynamic);
-                self.push_scope(scope);
-                offset
+        dynamic_scope![self, |len| {
+            match len {
+                0 => visitor.visit_none(),
+                1 => visitor.visit_some(&mut *self),
+                _ => Err(Error::message(
+                    "an option should be serialized as an \
+                     array of size either 0 or 1",
+                )),
             }
-            None => 0,
-        };
-
-        let seq_offset = self.read_uint_head(64)?;
-        let offset = (seq_offset << 1) + base as u64;
-
-        let curr = self.seek(SeekFrom::Start(offset as u64))?;
-
-        let len = self.read_uint_tail(64)?;
-        if len == 0 {
-            return visitor.visit_none();
-        }
-
-        self.push_scope(Scope::new(64 + curr as usize));
-
-        let res = visitor.visit_some(&mut *self);
-        let _ = self.scope.pop().unwrap();
-        res
+        }]
     }
 
     fn deserialize_unit<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -532,7 +522,6 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
         visitor.visit_unit()
     }
 
-    #[inline]
     fn deserialize_newtype_struct<V: de::Visitor<'de>>(
         self,
         name: &str,
@@ -543,45 +532,16 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
     }
 
     fn deserialize_seq<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let base = match self.pop_scope() {
-            Some(mut scope) => {
-                let offset = scope.offset;
-                scope.types.push(BaseType::Dynamic);
-                self.push_scope(scope);
-                offset
-            }
-            None => 0,
-        };
-
-        let seq_offset = self.read_uint_head(64)?;
-        let offset = (seq_offset << 1) + base as u64;
-
-        let curr = self.seek(SeekFrom::Start(offset as u64))?;
-
-        let len = self.read_uint_tail(64)?;
-        self.push_scope(Scope::new(64 + curr as usize));
-
-        let res = visitor.visit_seq(SeqAccess::new(self, len as usize));
-        let _ = self.scope.pop().unwrap();
-        res
+        dynamic_scope![self, |len| visitor
+            .visit_seq(SeqAccess::new(self, len as usize))]
     }
 
     fn deserialize_tuple<V: de::Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value> {
         self.tuple_counter += 1;
 
-        let base = match self.pop_scope() {
-            Some(mut scope) => {
-                let offset = scope.offset;
-                scope.types.push(BaseType::Dynamic);
-                self.push_scope(scope);
-                offset
-            }
-            None => 0,
-        };
-
         if let Some(t) = self.current_custom_deserializer {
             self.current_custom_deserializer = None;
-            return self.read_custom_tuple(base, len, t, visitor);
+            return self.read_custom_tuple(len, t, visitor);
         }
 
         // for tuples the deserialization is ambiguous. If the user has passed
@@ -590,8 +550,8 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
 
         match hint {
             Some(h) => match h {
-                BaseType::Static => self.read_static_size_tuple(base, len, visitor),
-                BaseType::Dynamic => self.read_dynamic_size_tuple(base, len, visitor),
+                BaseType::Static => self.read_static_size_tuple(len, visitor),
+                BaseType::Dynamic => self.read_dynamic_size_tuple(len, visitor),
             },
             None => {
                 // in case there's no hint, the assumption is the following:
@@ -605,9 +565,9 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
                     // This is just a guess, it can be that this fails, in which case
                     // an error with TupleHint will be raised so that the deserialization
                     // can be attempted again
-                    self.read_dynamic_size_tuple(base, len, visitor)
+                    self.read_dynamic_size_tuple(len, visitor)
                 } else {
-                    self.read_static_size_tuple(base, len, visitor)
+                    self.read_static_size_tuple(len, visitor)
                 }
             }
         }
@@ -629,10 +589,10 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
     fn deserialize_struct<V: de::Visitor<'de>>(
         self,
         _name: &'static str,
-        _fields: &'static [&'static str],
+        fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
-        self.deserialize_tuple(_fields.len(), visitor)
+        self.deserialize_tuple(fields.len(), visitor)
     }
 
     #[inline]
@@ -662,11 +622,7 @@ struct SeqAccess<'r, 'a, R> {
 
 impl<'r, 'a, R> SeqAccess<'r, 'a, R> {
     fn new(de: &'a mut Deserializer<'r, R>, len: usize) -> Self {
-        SeqAccess {
-            len: len,
-            count: 0,
-            de: de,
-        }
+        SeqAccess { len, count: 0, de }
     }
 }
 
@@ -690,15 +646,11 @@ impl<'de, 'r, 'a, R: Read + Seek + 'r> de::SeqAccess<'de> for SeqAccess<'r, 'a, 
         if self.count < self.len {
             // if there are still elements in the sequence, seek back to the next
             // items's head
-            let _ = self.de.seek(SeekFrom::Start(new_offset as u64))?;
+            self.de.seek(SeekFrom::Start(new_offset as u64))?;
         }
 
         self.de.push_scope(scope);
-
-        match res {
-            Err(err) => Err(err),
-            Ok(value) => Ok(Some(value)),
-        }
+        res.map(|value| Some(value))
     }
 }
 
@@ -708,7 +660,7 @@ struct EnumAccess<'r, 'a, R> {
 
 impl<'r, 'a, R> EnumAccess<'r, 'a, R> {
     fn new(de: &'a mut Deserializer<'r, R>) -> Self {
-        EnumAccess { de: de }
+        EnumAccess { de }
     }
 }
 
@@ -754,11 +706,7 @@ struct StaticTupleAccess<'r, 'a, R: 'r> {
 
 impl<'r, 'a, R> StaticTupleAccess<'r, 'a, R> {
     fn new(de: &'a mut Deserializer<'r, R>, len: usize) -> Self {
-        StaticTupleAccess {
-            len: len,
-            count: 0,
-            de: de,
-        }
+        StaticTupleAccess { len, count: 0, de }
     }
 }
 
@@ -782,15 +730,11 @@ impl<'de, 'r, 'a, R: Read + Seek + 'r> de::SeqAccess<'de> for StaticTupleAccess<
         if self.count < self.len {
             // if there are still elements in the sequence, seek back to the next
             // items's head
-            let _ = self.de.seek(SeekFrom::Start(new_offset as u64))?;
+            self.de.seek(SeekFrom::Start(new_offset as u64))?;
         }
 
         self.de.push_scope(scope);
-
-        match res {
-            Err(err) => Err(err),
-            Ok(value) => Ok(Some(value)),
-        }
+        res.map(|value| Some(value))
     }
 }
 
@@ -812,14 +756,15 @@ impl<'r, 'a, R: Read + Seek + 'r> DynamicTupleAccess<'r, 'a, R> {
     fn get_error(&mut self, error: Error) -> Error {
         match error.classify() {
             Category::Data => {
-                let has_dynamic_types = match self.de.pop_scope() {
-                    Some(scope) => {
+                let has_dynamic_types = self
+                    .de
+                    .pop_scope()
+                    .map(|scope| {
                         let has_dynamic_types = scope.has_dynamic_types();
                         self.de.push_scope(scope);
                         has_dynamic_types
-                    }
-                    None => false,
-                };
+                    })
+                    .unwrap_or(false);
 
                 let should_give_hint = error.description() == "insufficient bytes read from reader"
                     && !has_dynamic_types;
@@ -859,15 +804,11 @@ impl<'de, 'r, 'a, R: Read + Seek + 'a> de::SeqAccess<'de> for DynamicTupleAccess
         if self.count < self.len {
             // if there are still elements in the sequence, seek back to the next
             // items's head
-            let _ = self.de.seek(SeekFrom::Start(new_offset as u64))?;
+            self.de.seek(SeekFrom::Start(new_offset as u64))?;
         }
 
         self.de.push_scope(scope);
-
-        match res {
-            Err(err) => Err(err),
-            Ok(value) => Ok(Some(value)),
-        }
+        res.map(|value| Some(value))
     }
 }
 
@@ -919,8 +860,7 @@ pub fn from_reader<'de, R: Read + Seek, T: de::Deserialize<'de>>(read: R) -> Res
                     },
                 );
 
-                let _ = read.seek(SeekFrom::Start(0))?;
-                continue;
+                read.seek(SeekFrom::Start(0))?;
             }
             _ => {
                 de.end()?;
