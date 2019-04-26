@@ -45,7 +45,38 @@ impl Scope {
     }
 }
 
+macro_rules! array_stack {
+    ( $de:expr, $x:expr ) => {{
+        if ($de.remaining_size as usize) < $x {
+            return Err(Error::message(
+                "deserializer does not have enough space to \
+                 allocate a vector in the stack",
+            ));
+        }
+
+        [0 as u8; $x]
+    }};
+}
+
+macro_rules! vec_heap {
+    ( $de:expr, $x:expr ) => {{
+        if ($de.remaining_size as usize) < $x {
+            return Err(Error::message(
+                "deserializer does not have enough space to \
+                 allocate a vector in the heap",
+            ));
+        }
+
+        vec![0 as u8; $x]
+    }};
+}
+
 pub struct Deserializer<'r, R> {
+    /// Remaining number of bytes that will be read at most from the reader
+    /// or allocated in memory. Useful to avoid overflows or attempts to
+    /// have the deserializer to allocate too much memory
+    remaining_size: u64,
+
     /// Counts the number of tuples seen by the deserializer. Because
     /// tuple deserialization is ambiguous, in case of a failed attempt
     /// to deserialize a tuple, the counter can be used as an identifier
@@ -79,6 +110,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
 
     pub fn with_hints(read: &'r mut RefReadSeek<R>, tuple_hints: HashMap<u64, BaseType>) -> Self {
         Deserializer {
+            remaining_size: 1 << 24, // 16MB
             tuple_counter: 0,
             current_custom_deserializer: None,
             read,
@@ -100,6 +132,12 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
     }
 
     fn must_read(&mut self, bytes: &mut [u8]) -> Result<()> {
+        if self.remaining_size < bytes.len() as u64 {
+            return Err(Error::message(
+                "deserializer does not have remaining space to parse more data",
+            ));
+        }
+
         let mut total_read_bytes: usize = 0;
 
         while total_read_bytes < bytes.len() {
@@ -112,6 +150,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         }
 
         if total_read_bytes == bytes.len() {
+            self.remaining_size -= bytes.len() as u64;
             Ok(())
         } else {
             Err(Error::message("insufficient bytes read from reader"))
@@ -177,7 +216,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         let base = (read_bytes >> 6) << 6;
         let remain = if read_bytes - base == 0 { 0 } else { 1 };
         let read_len = base + (remain << 6);
-        let mut read_data = vec![0; read_len as usize];
+        let mut read_data = vec_heap![self, (read_len as usize)];
         self.must_read(&mut read_data[..])?;
 
         // keep track of how much data is read for a particular scope
@@ -261,14 +300,14 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
             None => {}
         }
 
-        let mut bytes = vec![0 as u8; 64];
+        let mut bytes = array_stack![self, 64];
         let _ = self.must_read(&mut bytes[..])?;
         let bytes = eth::decode_bytes(&bytes[..], 32)?;
         visitor.visit_seq(EthFixedAccess::new(bytes, t))
     }
 
     fn peek_uint(&mut self, size: usize) -> Result<u64> {
-        let mut bytes = [0; 64];
+        let mut bytes = array_stack![self, 64];
         self.must_read(&mut bytes)?;
         self.seek(SeekFrom::Current(-64))?;
         eth::decode_uint(&bytes, size)
@@ -299,7 +338,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
     }
 
     fn read_uint_head(&mut self, size: usize) -> Result<u64> {
-        let mut bytes = [0; 64];
+        let mut bytes = array_stack![self, 64];
         self.must_read(&mut bytes)?;
         match self.pop_scope() {
             Some(mut scope) => {
@@ -312,7 +351,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
     }
 
     fn read_uint_tail(&mut self, size: usize) -> Result<u64> {
-        let mut bytes = [0; 64];
+        let mut bytes = array_stack![self, 64];
         self.must_read(&mut bytes)?;
         match self.pop_scope() {
             Some(mut scope) => {
@@ -325,7 +364,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
     }
 
     fn read_int_head(&mut self, size: usize) -> Result<i64> {
-        let mut bytes = [0; 64];
+        let mut bytes = array_stack![self, 64];
         self.must_read(&mut bytes)?;
         match self.pop_scope() {
             Some(mut scope) => {
@@ -355,7 +394,7 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
             None => {}
         }
 
-        let mut bytes = [0; 64];
+        let mut bytes = array_stack![self, 64];
         self.must_read(&mut bytes)?;
         let value = eth::decode_bool(&bytes)?;
         visitor.visit_bool(value)
@@ -946,6 +985,17 @@ mod tests {
         ];
 
         test_parse_error::<u8>(tests);
+    }
+
+    #[test]
+    fn test_parse_string_error() {
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020\
+             000000000000000000000000000000000000000000000000000fffffffffffff",
+            "deserializer does not have enough space to allocate a vector in the heap",
+        )];
+
+        test_parse_error::<String>(tests);
     }
 
     #[test]
