@@ -38,22 +38,37 @@ impl Scope {
     }
 
     fn has_dynamic_types(&self) -> bool {
-        for t in &self.types {
-            match t {
-                BaseType::Dynamic => return true,
-                _ => {}
-            }
-        }
-
-        false
+        self.types.iter().any(|t| match t {
+            BaseType::Dynamic => true,
+            _ => false,
+        })
     }
 }
 
 pub struct Deserializer<'r, R> {
+    /// Counts the number of tuples seen by the deserializer. Because
+    /// tuple deserialization is ambiguous, in case of a failed attempt
+    /// to deserialize a tuple, the counter can be used as an identifier
+    /// for the tuple to provide a hint on what the deserializer thinks,
+    /// the tuple should be deserialized to.
     tuple_counter: u64,
+
+    /// A deserializer for custom types if required.
     current_custom_deserializer: Option<eth::Fixed>,
+
+    /// A reader seeker that has the content deserialized by the
+    /// deserializer
     read: &'r mut RefReadSeek<R>,
+
+    /// Hints that the Deserializer takes into consideration when
+    /// deserializing tuples. It can be used to attempt to deserialize
+    /// the same tuple either as a fixed array or a dynamically sized
+    /// tuple
     tuple_hints: HashMap<u64, BaseType>,
+
+    /// Keeps track of the current scope that is being deserialized.
+    /// Every sequence, or dynamically sized tuple adds a scope, and it's
+    /// treated as a stack
     scope: Vec<Scope>,
 }
 
@@ -66,7 +81,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         Deserializer {
             tuple_counter: 0,
             current_custom_deserializer: None,
-            read: read,
+            read,
             tuple_hints: tuple_hints,
             scope: Vec::new(),
         }

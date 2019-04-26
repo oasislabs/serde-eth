@@ -264,7 +264,6 @@ impl<'de> de::SeqAccess<'de> for EthFixedAccess {
         &mut self,
         seed: T,
     ) -> Result<Option<T::Value>> {
-        println!("eth_type");
         if self.count >= self.len {
             return Ok(None);
         } else {

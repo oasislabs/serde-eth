@@ -278,7 +278,7 @@ impl Node {
 
     fn aggregate_simple_nodes_in_sequence(nodes: Vec<Node>) -> Node {
         let mut head = String::from(eth::encode_u64(nodes.len() as u64));
-        let mut tail = String::from("");
+        let mut tail = String::new();
         let mut offset = Node::calculate_header_len_from_simple_nodes(&nodes);
 
         for node in nodes {
@@ -299,22 +299,18 @@ impl Node {
     }
 
     fn should_tuple_have_head(nodes: &Vec<Node>) -> bool {
-        for node in nodes {
-            match node {
-                Node::Fixed(_) => continue,
-                Node::Dynamic(_) => return true,
-                Node::Seq(_) => unreachable!(),
-                Node::Tuple(_) => unreachable!(),
-            }
-        }
-
-        return false;
+        nodes.iter().any(|t| match t {
+            Node::Fixed(_) => false,
+            Node::Dynamic(_) => true,
+            Node::Seq(_) => unreachable!(),
+            Node::Tuple(_) => unreachable!(),
+        })
     }
 
     fn aggregate_simple_nodes_in_tuple(nodes: Vec<Node>) -> Node {
         let needs_head = Node::should_tuple_have_head(&nodes);
-        let mut head = String::from("");
-        let mut tail = String::from("");
+        let mut head = String::new();
+        let mut tail = String::new();
         let mut offset = Node::calculate_header_len_from_simple_nodes(&nodes);
 
         for node in nodes {
@@ -341,18 +337,12 @@ impl Node {
     }
 
     fn calculate_header_len_from_simple_nodes(nodes: &Vec<Node>) -> usize {
-        let mut offset = 0 as usize;
-
-        for node in nodes {
-            match node {
-                Node::Fixed(h) => offset += h.len() >> 1,
-                Node::Dynamic(_) => offset += 32,
-                Node::Seq(_) => unreachable!(),
-                Node::Tuple(_) => unreachable!(),
-            }
-        }
-
-        offset
+        nodes.iter().fold(0, |acc, node| match node {
+            Node::Fixed(h) =>  acc + (h.len() >> 1),
+            Node::Dynamic(_) => acc + 32,
+            Node::Seq(_) => unreachable!(),
+            Node::Tuple(_) => unreachable!(),
+        })
     }
 
     fn serialize_compound_to_simple(nodes: Vec<Node>, mode: SerializationMode) -> Node {

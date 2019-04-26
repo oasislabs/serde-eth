@@ -54,8 +54,7 @@ pub(crate) fn decode_bytes(bytes: &[u8], len: usize) -> Result<Vec<u8>, Error> {
             "decoded bytes are smaller than the required length",
         ));
     }
-
-    Ok(decoded[..len].into())
+    Ok(decoded[..len].to_vec())
 }
 
 pub(crate) fn encode_bool(value: bool) -> String {
