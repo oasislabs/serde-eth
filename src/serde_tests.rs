@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
 use oasis_std::types::{Address, H160, H256, U256};
+use serde::{Deserialize, Serialize};
 use std::vec::Vec;
 
 fn gen_u256(n: u64) -> U256 {
@@ -239,7 +239,8 @@ pub(crate) fn test_u8() -> Vec<(u8, &'static str)> {
     ]
 }
 
-#[allow(overflowing_literals)]#[allow(dead_code)]
+#[allow(overflowing_literals)]
+#[allow(dead_code)]
 pub(crate) fn test_i8() -> Vec<(i8, &'static str)> {
     vec![
         (
@@ -291,7 +292,8 @@ pub(crate) fn test_u16() -> Vec<(u16, &'static str)> {
     ]
 }
 
-#[allow(overflowing_literals)]#[allow(dead_code)]
+#[allow(overflowing_literals)]
+#[allow(dead_code)]
 pub(crate) fn test_i16() -> Vec<(i16, &'static str)> {
     vec![
         (
@@ -343,7 +345,8 @@ pub(crate) fn test_u32() -> Vec<(u32, &'static str)> {
     ]
 }
 
-#[allow(overflowing_literals)]#[allow(dead_code)]
+#[allow(overflowing_literals)]
+#[allow(dead_code)]
 pub(crate) fn test_i32() -> Vec<(i32, &'static str)> {
     vec![
         (
@@ -395,7 +398,8 @@ pub(crate) fn test_u64() -> Vec<(u64, &'static str)> {
     ]
 }
 
-#[allow(overflowing_literals)]#[allow(dead_code)]
+#[allow(overflowing_literals)]
+#[allow(dead_code)]
 pub(crate) fn test_i64() -> Vec<(i64, &'static str)> {
     vec![
         (
@@ -461,7 +465,8 @@ pub(crate) fn test_string() -> Vec<(String, &'static str)> {
         ),
         (
             "some long string that takes more than 32 bytes so we can see how eth abi \
-             encodes long strings".to_string(),
+             encodes long strings"
+                .to_string(),
             "0000000000000000000000000000000000000000000000000000000000000020\
              000000000000000000000000000000000000000000000000000000000000005d\
              736f6d65206c6f6e6720737472696e6720746861742074616b6573206d6f7265\
@@ -541,7 +546,7 @@ pub(crate) fn test_seq_int() -> Vec<(Vec<u8>, &'static str)> {
 }
 
 #[allow(dead_code)]
-pub(crate) fn test_tuple_u8() -> Vec<([u8;3], &'static str)> {
+pub(crate) fn test_tuple_u8() -> Vec<([u8; 3], &'static str)> {
     vec![(
         [1 as u8; 3],
         "0000000000000000000000000000000000000000000000000000000000000001\
@@ -578,7 +583,10 @@ pub(crate) fn test_str_seq() -> Vec<(Vec<String>, &'static str)> {
 #[allow(dead_code)]
 pub(crate) fn test_multiseq() -> Vec<(Vec<Vec<String>>, &'static str)> {
     vec![(
-        vec![vec!["1".to_string(), "2".to_string()], vec!["3".to_string(), "4".to_string()]],
+        vec![
+            vec!["1".to_string(), "2".to_string()],
+            vec!["3".to_string(), "4".to_string()],
+        ],
         "0000000000000000000000000000000000000000000000000000000000000020\
          0000000000000000000000000000000000000000000000000000000000000002\
          0000000000000000000000000000000000000000000000000000000000000040\
@@ -666,7 +674,6 @@ pub(crate) fn test_composed_struct() -> Vec<(Composed, &'static str)> {
          0000000000000000000000000000000000000000000000000000000000000006\
          737472696e670000000000000000000000000000000000000000000000000000",
     )]
-
 }
 
 #[allow(dead_code)]

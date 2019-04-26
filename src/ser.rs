@@ -338,7 +338,7 @@ impl Node {
 
     fn calculate_header_len_from_simple_nodes(nodes: &Vec<Node>) -> usize {
         nodes.iter().fold(0, |acc, node| match node {
-            Node::Fixed(h) =>  acc + (h.len() >> 1),
+            Node::Fixed(h) => acc + (h.len() >> 1),
             Node::Dynamic(_) => acc + 32,
             Node::Seq(_) => unreachable!(),
             Node::Tuple(_) => unreachable!(),
@@ -920,8 +920,8 @@ pub fn to_string<T: ?Sized + ser::Serialize>(value: &T) -> Result<String> {
 #[cfg(test)]
 mod tests {
 
-    use crate::serde_tests;
     use super::to_string;
+    use crate::serde_tests;
     use serde::Serialize;
     use std::fmt::Debug;
 

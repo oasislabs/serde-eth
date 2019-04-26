@@ -887,7 +887,7 @@ mod tests {
     use std::{error::Error, fmt::Debug};
 
     fn test_parse_ok<T: Clone + Debug + PartialEq + ser::Serialize + de::DeserializeOwned>(
-        tests: &[(T, &str, )],
+        tests: &[(T, &str)],
     ) {
         for (value, s) in tests {
             let v: T = from_str(s).unwrap();
