@@ -194,23 +194,19 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
 
     fn read_static_size_tuple<'de, V: de::Visitor<'de>>(
         &mut self,
-        offset: usize,
+        _offset: usize,
         len: usize,
         visitor: V,
     ) -> Result<V::Value> {
-        let offset = match self.pop_scope() {
-            Some(scope) => {
-                let read_head = scope.read_head;
-                self.push_scope(scope);
-                offset + read_head
-            }
-            None => offset,
-        };
+        // the cursor of the reader should already be at the beginning
+        // of the tuple. Since a static tuple does not have offsets,
+        // we can just take that address as offset
+        let offset = self.seek(SeekFrom::Current(0))?;
 
         self.push_scope(Scope::new(offset as usize));
         let res = visitor.visit_seq(StaticTupleAccess::new(self, len as usize));
         let scope = self.scope.pop().unwrap();
-        let _ = self.seek(SeekFrom::Current(scope.read_tail as i64))?;
+        let _ = self.seek(SeekFrom::Current(scope.read_head as i64))?;
 
         match self.pop_scope() {
             Some(mut s) => {
@@ -1080,6 +1076,11 @@ mod tests {
     #[test]
     fn test_parse_composed_struct() {
         test_parse_ok(&serde_tests::test_composed_struct()[..]);
+    }
+
+    #[test]
+    fn test_parse_string_composed_struct() {
+        test_parse_ok(&serde_tests::test_string_composed_struct()[..]);
     }
 
     #[test]

@@ -1064,6 +1064,11 @@ mod tests {
     }
 
     #[test]
+    fn test_write_string_composed_struct() {
+        test_encode_ok(&serde_tests::test_string_composed_struct()[..]);
+    }
+
+    #[test]
     fn test_write_reversed_composed_struct() {
         test_encode_ok(&serde_tests::test_reversed_composed_struct()[..]);
     }
