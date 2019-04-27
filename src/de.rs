@@ -232,7 +232,7 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         let res = self.read_exact_to_end(&mut bytes);
 
         match res {
-			      // Being able to read any additional bytes means that stream was not at end.
+            // Being able to read any additional bytes means that stream was not at end.
             Ok(_) => Err(Error::parsing("input has not been processed completely")),
             Err(err) => match err.classify() {
                 Category::Data => Ok(()),
