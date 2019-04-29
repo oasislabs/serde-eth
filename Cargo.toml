@@ -11,10 +11,10 @@ edition = "2018"
 
 [dependencies]
 serde = {version = "1.0", features = ["serde_derive"]}
-ethabi = "7.0.0"
-hex = "0.3.2"
-oasis-std = "0.1.0"
-ethereum-types = "0.5.2"
+ethabi = "7.0"
+hex = "0.3"
+oasis-std = "0.1"
+ethereum-types = "0.5"
 
 [dev-dependencies]
 serde_derive = "1.0"
