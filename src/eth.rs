@@ -43,7 +43,7 @@ pub(crate) fn decode_uint(bytes: &[u8], size: usize) -> Result<u64, Error> {
 pub(crate) fn decode_int(bytes: &[u8], size: usize) -> Result<i64, Error> {
     if size < 8 || size > 64 {
         return Err(Error::message(
-            "an integer must be anumber between 8 and 64 bits",
+            "an integer must be a number between 8 and 64 bits",
         ));
     }
 
