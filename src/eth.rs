@@ -1,5 +1,3 @@
-use std::result::Result;
-
 use super::error::Error;
 
 pub(crate) fn decode_bool(bytes: &[u8]) -> Result<bool, Error> {
@@ -10,8 +8,10 @@ pub(crate) fn decode_bool(bytes: &[u8]) -> Result<bool, Error> {
         return Err(Error::parsing("decoded unexpected number of tokens"));
     }
 
-    let token = tokens.get(0).unwrap();
-    match token {
+    match tokens
+        .get(0)
+        .expect("If token decoded successfully there should be one token in the decoded list")
+    {
         ethabi::Token::Bool(b) => Ok(*b),
         _ => Err(Error::parsing("decoded unexpected type for boolean")),
     }
@@ -25,8 +25,10 @@ pub(crate) fn decode_uint(bytes: &[u8], size: usize) -> Result<u64, Error> {
         return Err(Error::parsing("decoded unexpected number of tokens"));
     }
 
-    let token = tokens.get(0).unwrap();
-    match token {
+    match tokens
+        .get(0)
+        .expect("If token decoded successfully there should be one token in the decoded list")
+    {
         ethabi::Token::Uint(v) => Ok(v.low_u64()),
         _ => Err(Error::parsing("decoded unexpected type for uint")),
     }
@@ -40,8 +42,10 @@ pub(crate) fn decode_int(bytes: &[u8], size: usize) -> Result<i64, Error> {
         return Err(Error::parsing("decoded unexpected number of tokens"));
     }
 
-    let token = tokens.get(0).unwrap();
-    match token {
+    match tokens
+        .get(0)
+        .expect("If token decoded successfully there should be one token in the decoded list")
+    {
         ethabi::Token::Int(v) => Ok(v.low_u64() as i64),
         _ => Err(Error::parsing("decoded unexpected type for int")),
     }
