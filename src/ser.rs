@@ -17,7 +17,6 @@ pub struct Serializer<W> {
 }
 
 impl<W: io::Write> Serializer<W> {
-    #[inline]
     pub fn new(writer: W) -> Self {
         Serializer {
             writer: writer,
@@ -25,13 +24,11 @@ impl<W: io::Write> Serializer<W> {
         }
     }
 
-    #[inline]
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
         self.current_custom_serializer = None;
         self.writer.write_all(bytes).map_err(Error::io)
     }
 
-    #[inline]
     pub fn into_inner(self) -> W {
         self.writer
     }
@@ -289,8 +286,7 @@ impl Node {
                     tail.push_str(&t);
                     offset += t.len() >> 1;
                 }
-                Node::Seq(_) => unreachable!(),
-                Node::Tuple(_) => unreachable!(),
+                Node::Seq(_) | Node::Tuple(_) => unreachable!(),
             }
         }
 
@@ -302,8 +298,7 @@ impl Node {
         nodes.iter().any(|t| match t {
             Node::Fixed(_) => false,
             Node::Dynamic(_) => true,
-            Node::Seq(_) => unreachable!(),
-            Node::Tuple(_) => unreachable!(),
+            Node::Seq(_) | Node::Tuple(_) => unreachable!(),
         })
     }
 
@@ -323,8 +318,7 @@ impl Node {
                     tail.push_str(&t);
                     offset += t.len() >> 1;
                 }
-                Node::Seq(_) => unreachable!(),
-                Node::Tuple(_) => unreachable!(),
+                Node::Seq(_) | Node::Tuple(_) => unreachable!(),
             }
         }
 
@@ -340,8 +334,7 @@ impl Node {
         nodes.iter().fold(0, |acc, node| match node {
             Node::Fixed(h) => acc + (h.len() >> 1),
             Node::Dynamic(_) => acc + 32,
-            Node::Seq(_) => unreachable!(),
-            Node::Tuple(_) => unreachable!(),
+            Node::Seq(_) | Node::Tuple(_) => unreachable!(),
         })
     }
 
@@ -529,7 +522,6 @@ pub struct NodeSerializer {
 }
 
 impl NodeSerializer {
-    #[inline]
     fn new(node: Node) -> Self {
         NodeSerializer {
             root: node,
@@ -537,12 +529,10 @@ impl NodeSerializer {
         }
     }
 
-    #[inline]
     fn into_inner(self) -> Node {
         self.root
     }
 
-    #[inline]
     fn push(&mut self, node: Node) {
         self.current_custom_serializer = None;
         self.root.push(node);
@@ -893,21 +883,18 @@ impl<'a, W: io::Write> ser::SerializeStructVariant for RootCompound<'a, W> {
     }
 }
 
-#[inline]
 pub fn to_writer<W: io::Write, T: ?Sized + ser::Serialize>(writer: W, value: &T) -> Result<()> {
     let mut ser = Serializer::new(writer);
     value.serialize(&mut ser)?;
     Ok(())
 }
 
-#[inline]
 pub fn to_vec<T: ?Sized + ser::Serialize>(value: &T) -> Result<Vec<u8>> {
     let mut writer = Vec::with_capacity(128);
     to_writer(&mut writer, value)?;
     Ok(writer)
 }
 
-#[inline]
 pub fn to_string<T: ?Sized + ser::Serialize>(value: &T) -> Result<String> {
     let vec = to_vec(value)?;
     let string = unsafe {

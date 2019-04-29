@@ -50,11 +50,12 @@ pub(crate) fn decode_int(bytes: &[u8], size: usize) -> Result<i64, Error> {
 pub(crate) fn decode_bytes(bytes: &[u8], len: usize) -> Result<Vec<u8>, Error> {
     let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
     if len > decoded.len() {
-        return Err(Error::parsing(
+        Err(Error::parsing(
             "decoded bytes are smaller than the required length",
-        ));
+        ))
+    } else {
+        Ok(decoded[..len].to_vec())
     }
-    Ok(decoded[..len].to_vec())
 }
 
 pub(crate) fn encode_bool(value: bool) -> String {

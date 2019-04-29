@@ -595,7 +595,6 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
         self.deserialize_tuple(fields.len(), visitor)
     }
 
-    #[inline]
     fn deserialize_enum<V: de::Visitor<'de>>(
         self,
         _name: &str,
@@ -793,9 +792,8 @@ impl<'de, 'r, 'a, R: Read + Seek + 'a> de::SeqAccess<'de> for DynamicTupleAccess
         }
 
         let res = seed.deserialize(&mut *self.de);
-        match res {
-            Ok(_) => {}
-            Err(error) => return Err(self.get_error(error)),
+        if let Err(error) = res {
+            return Err(self.get_error(error));
         }
 
         let scope = self.de.pop_scope().unwrap();

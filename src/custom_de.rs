@@ -5,6 +5,16 @@ use super::{
     eth::Fixed,
 };
 
+macro_rules! unimplemented_de {
+    ( $($name:ident),+ ) => {
+        $(
+            fn $name<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
+                Err(Error::not_implemented())
+            }
+        )*
+    }
+}
+
 struct EthFixedDeserializer {
     /// offset keeps track of the current position
     offset: i8,
@@ -27,13 +37,23 @@ struct EthFixedDeserializer {
 impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
     type Error = Error;
 
-    fn deserialize_any<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_bool<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
+    unimplemented_de!(
+        deserialize_any,
+        deserialize_bool,
+        deserialize_f32,
+        deserialize_f64,
+        deserialize_char,
+        deserialize_str,
+        deserialize_string,
+        deserialize_bytes,
+        deserialize_byte_buf,
+        deserialize_option,
+        deserialize_unit,
+        deserialize_seq,
+        deserialize_map,
+        deserialize_identifier,
+        deserialize_ignored_any
+    );
 
     fn deserialize_i8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         match self.serializer_type {
@@ -73,8 +93,18 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
         Err(Error::not_implemented())
     }
 
-    fn deserialize_u32<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
+    fn deserialize_u32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        match self.serializer_type {
+            Fixed::H256 | Fixed::H160 => panic!("received u32 when deserializing H256,H160"),
+            Fixed::U256 => {
+                let value = (self.content[self.offset as usize] as u32)
+                    + ((self.content[(self.offset + self.offset_sign) as usize] as u32) << 8)
+                    + ((self.content[(self.offset + 2 * self.offset_sign) as usize] as u32) << 16)
+                    + ((self.content[(self.offset + 3 * self.offset_sign) as usize] as u32) << 24);
+                self.offset += 4 * self.offset_sign;
+                visitor.visit_u32(value)
+            }
+        }
     }
 
     fn deserialize_u64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -95,39 +125,12 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
         }
     }
 
-    fn deserialize_f32<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_f64<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_char<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_str<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_string<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_bytes<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_byte_buf<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_option<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_unit<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
+    fn deserialize_tuple_struct<V: de::Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        _visitor: V,
+    ) -> Result<V::Value> {
         Err(Error::not_implemented())
     }
 
@@ -139,33 +142,11 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
         Err(Error::not_implemented())
     }
 
-    #[inline]
     fn deserialize_newtype_struct<V: de::Visitor<'de>>(
         self,
         _name: &str,
         _visitor: V,
     ) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_seq<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_tuple<V: de::Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value> {
-        visitor.visit_seq(EthTupleAccess::new(self))
-    }
-
-    fn deserialize_tuple_struct<V: de::Visitor<'de>>(
-        self,
-        _name: &'static str,
-        _len: usize,
-        _visitor: V,
-    ) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_map<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
         Err(Error::not_implemented())
     }
 
@@ -178,21 +159,16 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
         Err(Error::not_implemented())
     }
 
-    #[inline]
+    fn deserialize_tuple<V: de::Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value> {
+        visitor.visit_seq(EthTupleAccess::new(self))
+    }
+
     fn deserialize_enum<V: de::Visitor<'de>>(
         self,
         _name: &str,
         _variants: &'static [&'static str],
         _visitor: V,
     ) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_identifier<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-        Err(Error::not_implemented())
-    }
-
-    fn deserialize_ignored_any<V: de::Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
         Err(Error::not_implemented())
     }
 }
@@ -224,10 +200,7 @@ impl<'de, 'a> de::SeqAccess<'de> for EthTupleAccess<'a> {
             return Ok(None);
         } else {
             self.count += 1;
-            match seed.deserialize(&mut *self.de) {
-                Ok(value) => Ok(Some(value)),
-                Err(err) => Err(err),
-            }
+            seed.deserialize(&mut *self.de).map(|val| Some(val))
         }
     }
 }
@@ -239,26 +212,28 @@ pub struct EthFixedAccess {
 }
 
 impl EthFixedAccess {
-    pub fn new(bytes: Vec<u8>, t: Fixed) -> Self {
-        let (len, offset, offset_sign) = match t {
+    pub fn new(content: Vec<u8>, serializer_type: Fixed) -> Self {
+        let (len, offset, offset_sign) = match serializer_type {
             Fixed::H256 => (32, 0, 1),
             Fixed::H160 => (20, 12, 1),
             Fixed::U256 => (4, 31, -1),
         };
 
-        if bytes.len() < 32 {
-            panic!("the expected number of bytes is 32")
-        }
+        assert_eq!(
+            content.len() >= 32,
+            true,
+            "the expected number of bytes is 32"
+        );
 
         EthFixedAccess {
             count: 0,
             len: 1,
             de: EthFixedDeserializer {
-                len: len,
-                offset: offset,
-                offset_sign: offset_sign,
-                serializer_type: t,
-                content: bytes,
+                len,
+                offset,
+                offset_sign,
+                serializer_type,
+                content,
             },
         }
     }
@@ -275,10 +250,7 @@ impl<'de> de::SeqAccess<'de> for EthFixedAccess {
             return Ok(None);
         } else {
             self.count += 1;
-            match seed.deserialize(&mut self.de) {
-                Ok(value) => Ok(Some(value)),
-                Err(err) => Err(err),
-            }
+            seed.deserialize(&mut self.de).map(|val| Some(val))
         }
     }
 }
