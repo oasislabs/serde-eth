@@ -96,7 +96,7 @@ pub(crate) fn encode_bytes(value: &[u8]) -> String {
     hex::encode(abi_encoded)
 }
 
-fn verify_int(i: &ethabi::Int, size: usize) -> Result<i64, Error> {
+fn verify_int(int: &ethabi::Int, size: usize) -> Result<i64, Error> {
     if i.leading_zeros() > 0 {
         if i.bits() >= size {
             return Err(Error::parsing(
