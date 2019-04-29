@@ -18,6 +18,12 @@ pub(crate) fn decode_bool(bytes: &[u8]) -> Result<bool, Error> {
 }
 
 pub(crate) fn decode_uint(bytes: &[u8], size: usize) -> Result<u64, Error> {
+    if size < 8 || size > 64 {
+        return Err(Error::message(
+            "an unsigned integer must be anumber between 8 and 64 bits",
+        ));
+    }
+
     let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
     let tokens = ethabi::decode(&[ethabi::ParamType::Uint(size)], &decoded[..])
         .map_err(Error::eth_parsing)?;
@@ -29,12 +35,18 @@ pub(crate) fn decode_uint(bytes: &[u8], size: usize) -> Result<u64, Error> {
         .get(0)
         .expect("If token decoded successfully there should be one token in the decoded list")
     {
-        ethabi::Token::Uint(v) => Ok(v.low_u64()),
+        ethabi::Token::Uint(v) => verify_uint(v, size),
         _ => Err(Error::parsing("decoded unexpected type for uint")),
     }
 }
 
 pub(crate) fn decode_int(bytes: &[u8], size: usize) -> Result<i64, Error> {
+    if size < 8 || size > 64 {
+        return Err(Error::message(
+            "an integer must be anumber between 8 and 64 bits",
+        ));
+    }
+
     let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
     let tokens = ethabi::decode(&[ethabi::ParamType::Int(size)], &decoded[..])
         .map_err(Error::eth_parsing)?;
@@ -46,7 +58,7 @@ pub(crate) fn decode_int(bytes: &[u8], size: usize) -> Result<i64, Error> {
         .get(0)
         .expect("If token decoded successfully there should be one token in the decoded list")
     {
-        ethabi::Token::Int(v) => Ok(v.low_u64() as i64),
+        ethabi::Token::Int(v) => verify_int(v, size),
         _ => Err(Error::parsing("decoded unexpected type for int")),
     }
 }
@@ -82,6 +94,47 @@ pub(crate) fn encode_u64(value: u64) -> String {
 pub(crate) fn encode_bytes(value: &[u8]) -> String {
     let abi_encoded = ethabi::encode(&[ethabi::Token::Bytes(value.into())]);
     hex::encode(abi_encoded)
+}
+
+fn verify_int(i: &ethabi::Int, size: usize) -> Result<i64, Error> {
+    if i.leading_zeros() > 0 {
+        if i.bits() >= size {
+            return Err(Error::parsing(
+                "decoded integer does not fit in integer of specified size",
+            ));
+        }
+
+        return Ok(i.low_u64() as i64);
+    } else {
+        let (n, overflows) = i.overflowing_neg();
+        if !overflows {
+            // if it is a negative integer negating it must overflow
+            Err(Error::parsing(
+                "decoded integer does not fit in integer of specified size",
+            ))
+        } else {
+            let (n, overflows) = n.overflowing_add(ethereum_types::U256::one());
+            if overflows || n.bits() > size {
+                return Err(Error::parsing(
+                    "decoded integer does not fit in integer of specified size",
+                ));
+            }
+
+            let i = n.low_u64() as i64;
+            Ok(if i < 0 { i } else { -i })
+        }
+    }
+}
+
+fn verify_uint(u: &ethabi::Uint, size: usize) -> Result<u64, Error> {
+    println!("{}, {}", u, size);
+    if u.bits() > size {
+        return Err(Error::parsing(
+            "decoded integer does not fit in integer of specified size",
+        ));
+    }
+
+    return Ok(u.low_u64());
 }
 
 pub(crate) struct DynamicSizedEncoding {

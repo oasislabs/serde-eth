@@ -571,16 +571,18 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
                 // in which case it would be a dynamic sized tuple. In case it is not multiple
                 // of 32, for sure it is not an offset, in which case can be safely
                 // deserialized as a static sized tuple.
-                let tuple_offset = self.peek_uint(64)?;
+                let res = self.peek_uint(64);
 
-                if tuple_offset % 32 == 0 {
-                    // This is just a guess, it can be that this fails, in which case
-                    // an error with TupleHint will be raised so that the deserialization
-                    // can be attempted again
-                    self.read_dynamic_size_tuple(len, visitor)
-                } else {
-                    self.read_static_size_tuple(len, visitor)
+                if let Ok(tuple_offset) = res {
+                    if tuple_offset % 32 == 0 {
+                        // This is just a guess, it can be that this fails, in which case
+                        // an error with TupleHint will be raised so that the deserialization
+                        // can be attempted again
+                        return self.read_dynamic_size_tuple(len, visitor);
+                    }
                 }
+
+                self.read_static_size_tuple(len, visitor)
             }
         }
     }
@@ -967,50 +969,20 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_uint_error() {
-        let tests = &[
-            (
-                "1111111111111111111111111111111111111111111111111111111111111111",
-                "expected error",
-            ),
-            (
-                "1111111111111111111111111111111111111111111111111111111111111111\
-                 1111111111111111111111111111111111111111111111111111111111111111",
-                "input has not been processed completely",
-            ),
-            (
-                "2222222222222222222222222222222222222222222222222222222222222222",
-                "expected error",
-            ),
-            (
-                "0x0000000000000000000000000000000000000000000000000000000000000000",
-                "invalid character",
-            ),
-            ("0", "insufficient bytes read from reader"),
-            ("", "insufficient bytes read from reader"),
-        ];
-
-        test_parse_error::<u8>(tests);
-        test_parse_error::<u16>(tests);
-        test_parse_error::<u32>(tests);
-        test_parse_error::<u64>(tests);
-    }
-
-    #[test]
     fn test_parse_int_error() {
         let tests = &[
             (
                 "1111111111111111111111111111111111111111111111111111111111111111",
-                "expected error",
+                "decoded integer does not fit in integer of specified size",
             ),
             (
-                "1111111111111111111111111111111111111111111111111111111111111111\
+                "0000000000000000000000000000000000000000000000000000000000000001\
                  1111111111111111111111111111111111111111111111111111111111111111",
                 "input has not been processed completely",
             ),
             (
                 "2222222222222222222222222222222222222222222222222222222222222222",
-                "expected error",
+                "decoded integer does not fit in integer of specified size",
             ),
             (
                 "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -1024,6 +996,10 @@ mod tests {
         test_parse_error::<i16>(tests);
         test_parse_error::<i32>(tests);
         test_parse_error::<i64>(tests);
+        test_parse_error::<u8>(tests);
+        test_parse_error::<u16>(tests);
+        test_parse_error::<u32>(tests);
+        test_parse_error::<u64>(tests);
     }
 
     #[test]
@@ -1090,12 +1066,12 @@ mod tests {
         let tests = &[
             (
                 "1111111111111111111111111111111111111111111111111111111111111111",
-                "insufficient bytes read from reader",
+                "decoded integer does not fit in integer of specified size",
             ),
             (
                 "0000000000000000000000000000000000000000000000000000000000000020\
                  1111111111111111111111111111111111111111111111111111111111111111",
-                "deserializer does not have enough space to allocate a vector in the heap",
+                "decoded integer does not fit in integer of specified size",
             ),
             (
                 "0000000000000000000000000000000000000000000000000000000000000020\
@@ -1123,13 +1099,13 @@ mod tests {
     fn test_parse_string_error() {
         let tests = &[
             (
-                "1111111111111111111111111111111111111111111111111111111111111111",
+                "0000000000000000000000000000000000000000000000000000000000000020",
                 "insufficient bytes read from reader",
             ),
             (
                 "0000000000000000000000000000000000000000000000000000000000000020\
                  1111111111111111111111111111111111111111111111111111111111111111",
-                "deserializer does not have enough space to allocate a vector in the heap",
+                "decoded integer does not fit in integer of specified size",
             ),
             (
                 "0000000000000000000000000000000000000000000000000000000000000020\
@@ -1163,13 +1139,7 @@ mod tests {
             (
                 "0000000000000000000000000000000000000000000000000000000000000020\
                  1111111111111111111111111111111111111111111111111111111111111111",
-                "an option should be serialized as an array of size either 0 or 1",
-            ),
-            (
-                "0000000000000000000000000000000000000000000000000000000000000020\
-                 0000000000000000000000000000000000000000000000000000000000000001\
-                 0000000000000000000000000000000000000000000000000000000000000000",
-                "expected error",
+                "decoded integer does not fit in integer of specified size",
             ),
         ];
 
@@ -1183,12 +1153,10 @@ mod tests {
 
     #[test]
     fn test_parse_unit_error() {
-        let tests = &[
-            (
-                "0000000000000000000000000000000000000000000000000000000000000020",
-                "input has not been processed completely",
-            ),
-        ];
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020",
+            "input has not been processed completely",
+        )];
 
         test_parse_error::<()>(tests);
     }
