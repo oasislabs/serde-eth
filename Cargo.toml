@@ -13,7 +13,7 @@ edition = "2018"
 serde = {version = "1.0", features = ["serde_derive"]}
 ethabi = "7.0.0"
 hex = "0.3.2"
+oasis-std = "0.1.0"
 
 [dev-dependencies]
 serde_derive = "1.0"
-oasis-std = "0.1.0"

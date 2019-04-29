@@ -1,24 +1,9 @@
 use serde::ser;
 
-use super::error::{Error, Result};
-
-#[derive(Debug)]
-pub enum SerializerType {
-    H256,
-    H160,
-    U256,
-}
-
-impl SerializerType {
-    pub fn get(name: &str) -> Option<SerializerType> {
-        match name {
-            "H256" => Some(SerializerType::H256),
-            "H160" => Some(SerializerType::H160),
-            "U256" => Some(SerializerType::U256),
-            _ => None,
-        }
-    }
-}
+use super::{
+    error::{Error, Result},
+    eth::Fixed,
+};
 
 pub struct BasicEthSerializer {
     /// offset keeps track of the current position
@@ -29,7 +14,7 @@ pub struct BasicEthSerializer {
     offset_sign: i8,
 
     /// serializer_type is the type of serializer to do
-    serializer_type: SerializerType,
+    serializer_type: Fixed,
 
     /// content that the serializer aggregates. Call `serialize` to
     /// have the hex serialization of the data
@@ -48,11 +33,7 @@ impl BasicEthSerializer {
         BasicEthSerializer {
             offset: 32 - (len as i8),
             offset_sign: 1,
-            serializer_type: if len == 20 {
-                SerializerType::H160
-            } else {
-                SerializerType::H256
-            },
+            serializer_type: if len == 20 { Fixed::H160 } else { Fixed::H256 },
             content: [0; 32],
         }
     }
@@ -68,7 +49,7 @@ impl BasicEthSerializer {
         BasicEthSerializer {
             offset: 31,
             content: [0; 32],
-            serializer_type: SerializerType::U256,
+            serializer_type: Fixed::U256,
             offset_sign: -1,
         }
     }
@@ -94,8 +75,15 @@ impl<'a> ser::Serializer for &'a mut BasicEthSerializer {
         Err(Error::not_implemented())
     }
 
-    fn serialize_i8(self, _value: i8) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+    fn serialize_i8(self, value: i8) -> Result<Self::Ok> {
+        match self.serializer_type {
+            Fixed::U256 => panic!("received i8 when serializing U256"),
+            Fixed::H256 | Fixed::H160 => {
+                self.content[self.offset as usize] = value as u8;
+                self.offset += self.offset_sign;
+                Ok(())
+            }
+        }
     }
 
     fn serialize_i16(self, _value: i16) -> Result<Self::Ok> {
@@ -112,8 +100,8 @@ impl<'a> ser::Serializer for &'a mut BasicEthSerializer {
 
     fn serialize_u8(self, value: u8) -> Result<Self::Ok> {
         match self.serializer_type {
-            SerializerType::U256 => panic!("received u8 when serializing U256"),
-            SerializerType::H256 | SerializerType::H160 => {
+            Fixed::U256 => panic!("received u8 when serializing U256"),
+            Fixed::H256 | Fixed::H160 => {
                 self.content[self.offset as usize] = value;
                 self.offset += self.offset_sign;
                 Ok(())
@@ -125,16 +113,27 @@ impl<'a> ser::Serializer for &'a mut BasicEthSerializer {
         Err(Error::not_implemented())
     }
 
-    fn serialize_u32(self, _value: u32) -> Result<Self::Ok> {
-        Err(Error::not_implemented())
+    fn serialize_u32(self, value: u32) -> Result<Self::Ok> {
+        match self.serializer_type {
+            Fixed::H256 | Fixed::H160 => panic!("received u32 when serializing H256,H160"),
+            Fixed::U256 => {
+                self.content[self.offset as usize] = (value & 0x00ff) as u8;
+                self.content[(self.offset + self.offset_sign) as usize] =
+                    ((value >> 8) & 0x00ff) as u8;
+                self.content[(self.offset + 2 * self.offset_sign) as usize] =
+                    ((value >> 16) & 0x00ff) as u8;
+                self.content[(self.offset + 3 * self.offset_sign) as usize] =
+                    ((value >> 24) & 0x00ff) as u8;
+                self.offset += 4 * self.offset_sign;
+                Ok(())
+            }
+        }
     }
 
     fn serialize_u64(self, value: u64) -> Result<Self::Ok> {
         match self.serializer_type {
-            SerializerType::H256 | SerializerType::H160 => {
-                panic!("received u64 when serializing H256,H160")
-            }
-            SerializerType::U256 => {
+            Fixed::H256 | Fixed::H160 => panic!("received u64 when serializing H256,H160"),
+            Fixed::U256 => {
                 self.content[self.offset as usize] = (value & 0x00ff) as u8;
                 self.content[(self.offset + self.offset_sign) as usize] =
                     ((value >> 8) & 0x00ff) as u8;
