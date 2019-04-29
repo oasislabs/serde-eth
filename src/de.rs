@@ -210,7 +210,6 @@ impl<'r, R: Read + Seek> Deserializer<'r, R> {
         }
 
         let mut total_bytes_read = 0usize;
-
         while total_bytes_read < bytes.len() {
             let bytes_read = self.read.read(&mut bytes[total_bytes_read..])?;
             if bytes_read == 0 {
