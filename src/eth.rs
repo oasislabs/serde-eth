@@ -97,44 +97,43 @@ pub(crate) fn encode_bytes(value: &[u8]) -> String {
 }
 
 fn verify_int(int: &ethabi::Int, size: usize) -> Result<i64, Error> {
-    if i.leading_zeros() > 0 {
-        if i.bits() >= size {
+    if int.leading_zeros() > 0 {
+        if int.bits() >= size {
+            return Err(Error::parsing(
+                "decoded integer does not fit in integer of specified size",
+            ));
+        }
+        Ok(int.low_u64() as i64)
+    } else {
+        let (n, overflows) = int.overflowing_neg();
+        if !overflows {
+            // if it is a negative integer negating it must overflow
             return Err(Error::parsing(
                 "decoded integer does not fit in integer of specified size",
             ));
         }
 
-        return Ok(i.low_u64() as i64);
-    } else {
-        let (n, overflows) = i.overflowing_neg();
-        if !overflows {
-            // if it is a negative integer negating it must overflow
-            Err(Error::parsing(
+        let (n, overflows) = n.overflowing_add(ethereum_types::U256::one());
+        if overflows || n.bits() > size {
+            return Err(Error::parsing(
                 "decoded integer does not fit in integer of specified size",
-            ))
-        } else {
-            let (n, overflows) = n.overflowing_add(ethereum_types::U256::one());
-            if overflows || n.bits() > size {
-                return Err(Error::parsing(
-                    "decoded integer does not fit in integer of specified size",
-                ));
-            }
-
-            let i = n.low_u64() as i64;
-            Ok(if i < 0 { i } else { -i })
+            ));
         }
+
+        let int = n.low_u64() as i64;
+        Ok(if int < 0 { int } else { -int })
     }
 }
 
 fn verify_uint(u: &ethabi::Uint, size: usize) -> Result<u64, Error> {
     println!("{}, {}", u, size);
     if u.bits() > size {
-        return Err(Error::parsing(
+        Err(Error::parsing(
             "decoded integer does not fit in integer of specified size",
-        ));
+        ))
+    } else {
+        Ok(u.low_u64())
     }
-
-    return Ok(u.low_u64());
 }
 
 pub(crate) struct DynamicSizedEncoding {
