@@ -1,7 +1,9 @@
 # Serde ETH
 serde-eth is a [serde](https://serde.rs) data format for the [Ethereum ABI](https://solidity.readthedocs.io/en/develop/abi-spec.html)
 
----
+## Usage
+
+Start by adding the following dependency to your `Cargo.toml`.
 
 ```toml
 [dependencies]
