@@ -20,10 +20,23 @@ pub enum BaseType {
 }
 
 #[derive(Debug)]
+/// Scope is used to keep track of the scope in which a tuple
+/// or array are being serialized. This is useful to keep track
+/// of header and tail sizes of a scope and add them to the parent
+/// scope to keep track of offsets correctly.
 pub struct Scope {
+    /// Absolute offset from the input where the scope begins
     offset: usize,
+
+    /// Bytes already read from the head of the scope
     read_head: usize,
+
+    /// Bytes already read from the tail of the scope
     read_tail: usize,
+
+    /// Types present in the scope. In practice this is useful
+    /// to find out if a tuple should be decoded as a dynamic tuple
+    /// or not in case of doubt
     types: Vec<BaseType>,
 }
 
@@ -558,16 +571,18 @@ impl<'r, 'de, 'a, R: Read + Seek> de::Deserializer<'de> for &'a mut Deserializer
                 // in which case it would be a dynamic sized tuple. In case it is not multiple
                 // of 32, for sure it is not an offset, in which case can be safely
                 // deserialized as a static sized tuple.
-                let tuple_offset = self.peek_uint(64)?;
+                let res = self.peek_uint(64);
 
-                if tuple_offset % 32 == 0 {
-                    // This is just a guess, it can be that this fails, in which case
-                    // an error with TupleHint will be raised so that the deserialization
-                    // can be attempted again
-                    self.read_dynamic_size_tuple(len, visitor)
-                } else {
-                    self.read_static_size_tuple(len, visitor)
+                if let Ok(tuple_offset) = res {
+                    if tuple_offset % 32 == 0 {
+                        // This is just a guess, it can be that this fails, in which case
+                        // an error with TupleHint will be raised so that the deserialization
+                        // can be attempted again
+                        return self.read_dynamic_size_tuple(len, visitor);
+                    }
                 }
+
+                self.read_static_size_tuple(len, visitor)
             }
         }
     }
@@ -924,39 +939,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_u8_error() {
-        let tests = &[
-            (
-                "1111111111111111111111111111111111111111111111111111111111111111",
-                "expected error",
-            ),
-            (
-                "2222222222222222222222222222222222222222222222222222222222222222",
-                "expected error",
-            ),
-            (
-                "0x0000000000000000000000000000000000000000000000000000000000000000",
-                "invalid character",
-            ),
-            ("0", "insufficient bytes read from reader"),
-            ("", "insufficient bytes read from reader"),
-        ];
-
-        test_parse_error::<u8>(tests);
-    }
-
-    #[test]
-    fn test_parse_string_error() {
-        let tests = &[(
-            "0000000000000000000000000000000000000000000000000000000000000020\
-             000000000000000000000000000000000000000000000000000fffffffffffff",
-            "deserializer does not have enough space to allocate a vector in the heap",
-        )];
-
-        test_parse_error::<String>(tests);
-    }
-
-    #[test]
     fn test_parse_h160() {
         test_parse_ok(&serde_tests::test_h160()[..]);
     }
@@ -984,6 +966,59 @@ mod tests {
     #[test]
     fn test_parse_u8() {
         test_parse_ok(&serde_tests::test_u8()[..]);
+    }
+
+    #[test]
+    fn test_parse_int_error() {
+        let tests = &[
+            (
+                "1111111111111111111111111111111111111111111111111111111111111111",
+                "decoded integer does not fit in integer of specified size",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000001\
+                 1111111111111111111111111111111111111111111111111111111111111111",
+                "input has not been processed completely",
+            ),
+            (
+                "2222222222222222222222222222222222222222222222222222222222222222",
+                "decoded integer does not fit in integer of specified size",
+            ),
+            (
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "invalid character",
+            ),
+            ("0", "insufficient bytes read from reader"),
+            ("", "insufficient bytes read from reader"),
+        ];
+
+        test_parse_error::<i8>(tests);
+        test_parse_error::<i16>(tests);
+        test_parse_error::<i32>(tests);
+        test_parse_error::<i64>(tests);
+        test_parse_error::<u8>(tests);
+        test_parse_error::<u16>(tests);
+        test_parse_error::<u32>(tests);
+        test_parse_error::<u64>(tests);
+    }
+
+    #[test]
+    fn test_parse_float_error() {
+        let tests = &[
+            (
+                "1111111111111111111111111111111111111111111111111111111111111111",
+                "not implemented",
+            ),
+            (
+                "1111111111111111111111111111111111111111111111111111111111111111\
+                 1111111111111111111111111111111111111111111111111111111111111111",
+                "not implemented",
+            ),
+            ("0", "not implemented"),
+        ];
+
+        test_parse_error::<f32>(tests);
+        test_parse_error::<f64>(tests);
     }
 
     #[test]
@@ -1027,8 +1062,60 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_char_error() {
+        let tests = &[
+            (
+                "1111111111111111111111111111111111111111111111111111111111111111",
+                "decoded integer does not fit in integer of specified size",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 1111111111111111111111111111111111111111111111111111111111111111",
+                "decoded integer does not fit in integer of specified size",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000005\
+                 68656c6c6f000000000000000000000000000000000000000000000000000000",
+                "parsed char from byte array longer than 4 bytes",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 68656c6c6f000000000000000000000000000000000000000000000000000000",
+                "expected error",
+            ),
+        ];
+
+        test_parse_error::<char>(tests);
+    }
+
+    #[test]
     fn test_parse_string() {
         test_parse_ok(&serde_tests::test_string()[..]);
+    }
+
+    #[test]
+    fn test_parse_string_error() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020",
+                "insufficient bytes read from reader",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 1111111111111111111111111111111111111111111111111111111111111111",
+                "decoded integer does not fit in integer of specified size",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 0000000000000000000000000000000000000000000000000000000000000000",
+                "expected error",
+            ),
+        ];
+
+        test_parse_error::<String>(tests);
     }
 
     #[test]
@@ -1037,8 +1124,41 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_option_error() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000001",
+                "insufficient bytes read from reader",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000002",
+                "an option should be serialized as an array of size either 0 or 1",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 1111111111111111111111111111111111111111111111111111111111111111",
+                "decoded integer does not fit in integer of specified size",
+            ),
+        ];
+
+        test_parse_error::<Option<String>>(tests);
+    }
+
+    #[test]
     fn test_parse_unit() {
         test_parse_ok(&serde_tests::test_unit()[..]);
+    }
+
+    #[test]
+    fn test_parse_unit_error() {
+        let tests = &[(
+            "0000000000000000000000000000000000000000000000000000000000000020",
+            "input has not been processed completely",
+        )];
+
+        test_parse_error::<()>(tests);
     }
 
     #[test]
@@ -1049,6 +1169,38 @@ mod tests {
     #[test]
     fn test_parse_tuple_string() {
         test_parse_ok(&serde_tests::test_tuple_string()[..]);
+    }
+
+    #[test]
+    fn test_parse_tuple_error() {
+        let tests = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "insufficient bytes read from reader",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000002",
+                "insufficient bytes read from reader",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000001\
+                 0000000000000000000000000000000000000000000000000000000000000000",
+                "insufficient bytes read from reader",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000020\
+                 0000000000000000000000000000000000000000000000000000000000000000",
+                "input has not been processed completely",
+            ),
+        ];
+
+        test_parse_error::<(u8, u16, u32, u64)>(tests);
     }
 
     #[test]
