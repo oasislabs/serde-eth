@@ -28,15 +28,15 @@ struct Person {
   phones: Vec<String>,
 }
 
-fn encoding(person: Person) -> Result<Vec<u8>> {
-  serde_eth::to_vec(person)
+fn encoding(person: Person) -> Vec<u8> {
+  serde_eth::to_vec(person).unwrap()
 }
 
-fn decoding(vec: Vec<u8>) -> Result<Person> {
+fn decoding(vec: Vec<u8>) -> Person {
   // eth abi is defined as a utf8 encoded hex string of
   // the binary representation of the types
   let s = String::from_utf8(vec).unwrap();
-  serde_eth::from_str(&s)
+  serde_eth::from_str(&s).unwrap()
 }
 
 fn example() {
@@ -48,8 +48,8 @@ fn example() {
     phones: vec!["1234", "5678"],
   };
   
-  let v = encoding(p).unwrap();
-  let result = decoding(v).unwrap();
+  let v = encoding(p);
+  let result = decoding(v);
   
   assert_eq!(p, result);
 }
