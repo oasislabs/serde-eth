@@ -10,7 +10,6 @@ Start by adding the following dependency to your `Cargo.toml`.
 serde-eth = "0.1"
 ```
 
-The ETH abi is the abi defined by ethereum found [here](https://solidity.readthedocs.io/en/develop/abi-spec.html).
 
 serde-eth allows for easy serialization and deserialization of Rust types into/from eth abi.
 
