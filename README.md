@@ -13,7 +13,7 @@ serde-eth = "0.1"
 
 serde-eth allows for easy serialization and deserialization of Rust types into/from eth abi.
 
-## Encoding and Decoding
+### Encoding and Decoding
 
 ```rust
 use serde::{Deserialize, Serialize};
