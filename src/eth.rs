@@ -1,66 +1,88 @@
 use super::error::Error;
+use oasis_std::types::U256;
 
-pub(crate) fn decode_bool(bytes: &[u8]) -> Result<bool, Error> {
-    let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
-    let tokens =
-        ethabi::decode(&[ethabi::ParamType::Bool], &decoded[..]).map_err(Error::eth_parsing)?;
-    if tokens.len() != 1 {
-        return Err(Error::parsing("decoded unexpected number of tokens"));
+fn parse_int(bytes: &[u8], size: usize) -> Result<i64, Error> {
+    if bytes.len() != 64 {
+        return Err(Error::parsing("invalid byte array size for uint"));
     }
 
-    match tokens
-        .get(0)
-        .expect("If token decoded successfully there should be one token in the decoded list")
-    {
-        ethabi::Token::Bool(b) => Ok(*b),
-        _ => Err(Error::parsing("decoded unexpected type for boolean")),
+    let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
+    let value: U256 = (&decoded[..]).into();
+
+    // if value is supposed to be a positive integer
+    if value.leading_zeros() > 0 {
+        if value.bits() > size {
+            return Err(Error::parsing(
+                "decoded integer does not fit in integer of specified size",
+            ));
+        }
+        return Ok(value.low_u64() as i64);
+    }
+
+    let (n, overflows) = value.overflowing_neg();
+    if !overflows {
+        // if it is a negative integer negating it must overflow
+        return Err(Error::parsing(
+            "decoded integer does not fit in integer of specified size",
+        ));
+    }
+
+    let (n, overflows) = n.overflowing_add(U256::one());
+    if overflows || n.bits() > size {
+        return Err(Error::parsing(
+            "decoded integer does not fit in integer of specified size",
+        ));
+    }
+
+    let int = n.low_u64() as i64;
+    Ok(if int < 0 { int } else { -int })
+}
+
+fn parse_uint(bytes: &[u8], size: usize) -> Result<u64, Error> {
+    if bytes.len() != 64 {
+        return Err(Error::parsing("invalid byte array size for uint"));
+    }
+
+    let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
+    let value: U256 = (&decoded[..]).into();
+
+    // if value is supposed to be a positive integer
+    if value.leading_zeros() > 0 {
+        if value.bits() > size {
+            return Err(Error::parsing(
+                "decoded integer does not fit in integer of specified size",
+            ));
+        }
+        Ok(value.low_u64())
+    } else {
+        Err(Error::parsing(
+            "decoded integer does not fit in integer of specified size",
+        ))
+    }
+}
+
+fn gen_uint(value: u64) -> String {
+    let uint: U256 = value.into();
+    let mut bytes = [0u8; 32];
+    uint.to_big_endian(&mut bytes[..]);
+    hex::encode(&bytes[..])
+}
+
+pub(crate) fn decode_bool(bytes: &[u8]) -> Result<bool, Error> {
+    let value = parse_uint(bytes, 1)?;
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(Error::parsing("invalid value for boolean")),
     }
 }
 
 pub(crate) fn decode_uint(bytes: &[u8], size: usize) -> Result<u64, Error> {
-    if size < 8 || size > 64 {
-        return Err(Error::message(
-            "an unsigned integer must be anumber between 8 and 64 bits",
-        ));
-    }
-
-    let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
-    let tokens = ethabi::decode(&[ethabi::ParamType::Uint(size)], &decoded[..])
-        .map_err(Error::eth_parsing)?;
-    if tokens.len() != 1 {
-        return Err(Error::parsing("decoded unexpected number of tokens"));
-    }
-
-    match tokens
-        .get(0)
-        .expect("If token decoded successfully there should be one token in the decoded list")
-    {
-        ethabi::Token::Uint(v) => verify_uint(v, size),
-        _ => Err(Error::parsing("decoded unexpected type for uint")),
-    }
+    parse_uint(bytes, size)
 }
 
 pub(crate) fn decode_int(bytes: &[u8], size: usize) -> Result<i64, Error> {
-    if size < 8 || size > 64 {
-        return Err(Error::message(
-            "an integer must be a number between 8 and 64 bits",
-        ));
-    }
-
-    let decoded = hex::decode(bytes).map_err(Error::hex_parsing)?;
-    let tokens = ethabi::decode(&[ethabi::ParamType::Int(size)], &decoded[..])
-        .map_err(Error::eth_parsing)?;
-    if tokens.len() != 1 {
-        return Err(Error::parsing("decoded unexpected number of tokens"));
-    }
-
-    match tokens
-        .get(0)
-        .expect("If token decoded successfully there should be one token in the decoded list")
-    {
-        ethabi::Token::Int(v) => verify_int(v, size),
-        _ => Err(Error::parsing("decoded unexpected type for int")),
-    }
+    parse_int(bytes, size)
 }
 
 pub(crate) fn decode_bytes(bytes: &[u8], len: usize) -> Result<Vec<u8>, Error> {
@@ -75,80 +97,67 @@ pub(crate) fn decode_bytes(bytes: &[u8], len: usize) -> Result<Vec<u8>, Error> {
 }
 
 pub(crate) fn encode_bool(value: bool) -> String {
-    let abi_encoded = ethabi::encode(&[ethabi::Token::Bool(value)]);
-    hex::encode(abi_encoded)
+    let uint = if value { 1 } else { 0 };
+    gen_uint(uint)
 }
 
 pub(crate) fn encode_i64(value: i64) -> String {
-    let padded = pad_i64(value);
-    let abi_encoded = ethabi::encode(&[ethabi::Token::Int(padded.into())]);
-    hex::encode(abi_encoded)
+    if value >= 0 {
+        return gen_uint(value as u64);
+    }
+
+    let value = (!value as u64) + 1;
+    let uint: U256 = value.into();
+    let (uint, overflows) = uint.overflowing_sub(U256::one());
+    if overflows {
+        if uint != U256::zero() {
+            panic!("expected overflow from negating uint");
+        }
+    }
+
+    // if original value was -1, and it is set as 0 for U256,
+    // overflowing_neg() leaves 0 unchanged. So we do this,
+    // in order to get back the 0xfff..ff (32 f's)
+    // value which is the correct encoding
+    let uint = if uint == U256::zero() {
+        let (uint, _) = U256::one().overflowing_neg();
+        let (uint, _) = uint.overflowing_add(U256::one());
+        uint
+    } else {
+        let (uint, overflows) = uint.overflowing_neg();
+        if !overflows {
+            panic!("expected overflow from negating uint");
+        }
+        uint
+    };
+
+    let mut bytes = [0u8; 32];
+    uint.to_big_endian(&mut bytes[..]);
+    hex::encode(&bytes[..])
 }
 
 pub(crate) fn encode_u64(value: u64) -> String {
-    let padded = pad_u64(value);
-    let abi_encoded = ethabi::encode(&[ethabi::Token::Uint(padded.into())]);
-    hex::encode(abi_encoded)
+    gen_uint(value)
 }
 
 pub(crate) fn encode_bytes(value: &[u8]) -> String {
-    let abi_encoded = ethabi::encode(&[ethabi::Token::Bytes(value.into())]);
-    hex::encode(abi_encoded)
-}
+    let encoding = encode_bytes_dynamic(value);
 
-fn verify_int(int: &ethabi::Int, size: usize) -> Result<i64, Error> {
-    if int.leading_zeros() > 0 {
-        if int.bits() >= size {
-            return Err(Error::parsing(
-                "decoded integer does not fit in integer of specified size",
-            ));
-        }
-        Ok(int.low_u64() as i64)
-    } else {
-        let (n, overflows) = int.overflowing_neg();
-        if !overflows {
-            // if it is a negative integer negating it must overflow
-            return Err(Error::parsing(
-                "decoded integer does not fit in integer of specified size",
-            ));
-        }
-
-        let (n, overflows) = n.overflowing_add(ethereum_types::U256::one());
-        if overflows || n.bits() > size {
-            return Err(Error::parsing(
-                "decoded integer does not fit in integer of specified size",
-            ));
-        }
-
-        let int = n.low_u64() as i64;
-        Ok(if int < 0 { int } else { -int })
-    }
-}
-
-fn verify_uint(u: &ethabi::Uint, size: usize) -> Result<u64, Error> {
-    println!("{}, {}", u, size);
-    if u.bits() > size {
-        Err(Error::parsing(
-            "decoded integer does not fit in integer of specified size",
-        ))
-    } else {
-        Ok(u.low_u64())
-    }
+    // just set the default offset to 0x20
+    let offset = "0000000000000000000000000000000000000000000000000000000000000020";
+    let mut result = String::new();
+    result.push_str(offset);
+    result.push_str(encoding.size());
+    result.push_str(encoding.content());
+    result
 }
 
 pub(crate) struct DynamicSizedEncoding {
-    #[allow(dead_code)]
-    offset: String,
     size: String,
     content: String,
 }
 
 impl DynamicSizedEncoding {
-    #[allow(dead_code)]
-    pub(crate) fn offset(&self) -> &str {
-        &self.offset
-    }
-
     pub(crate) fn size(&self) -> &str {
         &self.size
     }
@@ -159,49 +168,24 @@ impl DynamicSizedEncoding {
 }
 
 pub(crate) fn encode_bytes_dynamic(value: &[u8]) -> DynamicSizedEncoding {
-    let abi_encoded = ethabi::encode(&[ethabi::Token::Bytes(value.into())]);
-    let hex_encoded = hex::encode(abi_encoded);
+    let len = value.len() as u64;
+    let base = (len >> 5) << 5;
+    let remain = if len - base == 0u64 { 0 } else { 1 };
+    let payload_len = base + (remain << 5);
+    let total_len = payload_len; // offset and length
+    let mut payload = vec![0u8; total_len as usize];
 
-    // ignore head which is the offset set by default by ethabi
-    let (offset, tail) = hex_encoded.split_at(64);
-    let (size, content) = tail.split_at(64);
-    DynamicSizedEncoding {
-        offset: offset.to_string(),
-        size: size.to_string(),
-        content: content.to_string(),
-    }
-}
-
-/// Converts u64 to right aligned array of 32 bytes.
-fn pad_u64(value: u64) -> [u8; 32] {
-    let mut padded = [0u8; 32];
-    padded[24] = (value >> 56) as u8;
-    padded[25] = (value >> 48) as u8;
-    padded[26] = (value >> 40) as u8;
-    padded[27] = (value >> 32) as u8;
-    padded[28] = (value >> 24) as u8;
-    padded[29] = (value >> 16) as u8;
-    padded[30] = (value >> 8) as u8;
-    padded[31] = value as u8;
-    padded
-}
-
-/// Converts i64 to right aligned array of 32 bytes.
-fn pad_i64(value: i64) -> [u8; 32] {
-    if value >= 0 {
-        return pad_u64(value as u64);
+    for i in 0..value.len() {
+        payload[i] = value[i];
     }
 
-    let mut padded = [0xffu8; 32];
-    padded[24] = (value >> 56) as u8;
-    padded[25] = (value >> 48) as u8;
-    padded[26] = (value >> 40) as u8;
-    padded[27] = (value >> 32) as u8;
-    padded[28] = (value >> 24) as u8;
-    padded[29] = (value >> 16) as u8;
-    padded[30] = (value >> 8) as u8;
-    padded[31] = value as u8;
-    padded
+    let mut size = vec![0u8; 32];
+    let len: U256 = value.len().into();
+    len.to_big_endian(&mut size[..]);
+
+    let size = hex::encode(size);
+    let content = hex::encode(payload);
+    DynamicSizedEncoding { size, content }
 }
 
 #[derive(Debug, Clone, Copy)]

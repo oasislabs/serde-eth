@@ -925,7 +925,7 @@ mod tests {
             ),
             (
                 "1000000000000000000000000000000000000000000000000000000000000000",
-                "Cannot decode bool",
+                "decoded integer does not fit in integer of specified size",
             ),
             (
                 "0x0000000000000000000000000000000000000000000000000000000000000000",
