@@ -1,5 +1,5 @@
 # Serde ETH
-**Serde is a framework for *ser*ializing and *de*serializing Rust data structures efficiently and generically.**
+serde-eth is a [serde](https://serde.rs) data format for the [Ethereum ABI](https://solidity.readthedocs.io/en/develop/abi-spec.html)
 
 ---
 
