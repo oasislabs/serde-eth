@@ -15,7 +15,6 @@ impl Error {
             ErrorCode::Message(_) => Category::Data,
             ErrorCode::IO(_) => Category::IO,
             ErrorCode::NotImplemented => Category::Internal,
-            ErrorCode::EthParsing(_) => Category::Syntax,
             ErrorCode::HexParsing(_) => Category::Syntax,
             ErrorCode::Parsing(_) => Category::Syntax,
         }
@@ -80,7 +79,6 @@ pub enum ErrorCode {
     Message(Box<str>),
     IO(io::Error),
     NotImplemented,
-    EthParsing(ethabi::Error),
     HexParsing(hex::FromHexError),
     Parsing(Box<str>),
 }
@@ -118,14 +116,6 @@ impl Error {
         }
     }
 
-    pub(crate) fn eth_parsing(error: ethabi::Error) -> Self {
-        Error {
-            err: Box::new(ErrorImpl {
-                code: ErrorCode::EthParsing(error),
-            }),
-        }
-    }
-
     pub(crate) fn hex_parsing(error: hex::FromHexError) -> Self {
         Error {
             err: Box::new(ErrorImpl {
@@ -150,7 +140,6 @@ impl fmt::Display for ErrorCode {
             ErrorCode::Message(ref msg) => f.write_str(msg),
             ErrorCode::IO(ref err) => fmt::Display::fmt(err, f),
             ErrorCode::NotImplemented => f.write_str("not implemented"),
-            ErrorCode::EthParsing(ref err) => fmt::Display::fmt(err, f),
             ErrorCode::HexParsing(ref err) => fmt::Display::fmt(err, f),
             ErrorCode::Parsing(ref msg) => f.write_str(msg),
         }
@@ -164,7 +153,6 @@ impl error::Error for Error {
             ErrorCode::IO(ref err) => error::Error::description(err),
             ErrorCode::Message(ref str) => str,
             ErrorCode::NotImplemented => "not implemented",
-            ErrorCode::EthParsing(ref err) => error::Error::description(err),
             ErrorCode::HexParsing(ref err) => error::Error::description(err),
             ErrorCode::Parsing(ref str) => str,
         }
@@ -174,7 +162,6 @@ impl error::Error for Error {
         match self.err.code {
             ErrorCode::TupleHint(_, ref err) => Some(err),
             ErrorCode::IO(ref err) => Some(err),
-            ErrorCode::EthParsing(ref err) => Some(err),
             ErrorCode::HexParsing(ref err) => Some(err),
             _ => None,
         }
