@@ -56,7 +56,7 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
     );
 
     fn deserialize_i8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        if self.remaining_bytes <= 0 {
+        if self.remaining_bytes < 1 {
             panic!("received i8 when there are no more expected bytes to deserialize")
         }
 
@@ -84,7 +84,7 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
     }
 
     fn deserialize_u8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        if self.remaining_bytes <= 0 {
+        if self.remaining_bytes < 1 {
             panic!("received u8 when there are no more expected bytes to deserialize")
         }
 
@@ -104,7 +104,7 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
     }
 
     fn deserialize_u32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        if self.remaining_bytes <= 0 {
+        if self.remaining_bytes < 4 {
             panic!("received u8 when there are no more expected bytes to deserialize")
         }
 
@@ -124,7 +124,7 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
     }
 
     fn deserialize_u64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        if self.remaining_bytes <= 0 {
+        if self.remaining_bytes < 8 {
             panic!("received u8 when there are no more expected bytes to deserialize")
         }
 
