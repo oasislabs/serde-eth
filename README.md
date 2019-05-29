@@ -1,4 +1,5 @@
 # Serde ETH
+[![CircleCI](https://circleci.com/gh/oasislabs/serde-eth.svg?style=svg)](https://circleci.com/gh/oasislabs/serde-eth)
 serde-eth is a [serde](https://serde.rs) data format for the [Ethereum ABI](https://solidity.readthedocs.io/en/develop/abi-spec.html)
 
 ## Usage
