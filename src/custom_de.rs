@@ -23,8 +23,8 @@ struct EthFixedDeserializer {
     /// Use -1 for big endian arrays and 1 for little endian arrays
     offset_sign: i8,
 
-    /// expected number of elements to deserialize
-    len: usize,
+    /// remaining number of bytes that need to be deserialized
+    remaining_bytes: usize,
 
     /// serializer_type is the type of serializer to do
     serializer_type: Fixed,
@@ -56,9 +56,14 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
     );
 
     fn deserialize_i8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        if self.remaining_bytes < 1 {
+            panic!("received i8 when there are no more expected bytes to deserialize")
+        }
+
         match self.serializer_type {
             Fixed::U256 => panic!("received i8 when deserializing U256"),
             Fixed::H256 | Fixed::H160 => {
+                self.remaining_bytes -= 1;
                 let value = self.content[self.offset as usize];
                 self.offset += self.offset_sign;
                 visitor.visit_i8(value as i8)
@@ -79,9 +84,14 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
     }
 
     fn deserialize_u8<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        if self.remaining_bytes < 1 {
+            panic!("received u8 when there are no more expected bytes to deserialize")
+        }
+
         match self.serializer_type {
             Fixed::U256 => panic!("received u8 when deserializing U256"),
             Fixed::H256 | Fixed::H160 => {
+                self.remaining_bytes -= 1;
                 let value = self.content[self.offset as usize];
                 self.offset += self.offset_sign;
                 visitor.visit_u8(value)
@@ -94,13 +104,19 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
     }
 
     fn deserialize_u32<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        if self.remaining_bytes < 4 {
+            panic!("received u8 when there are no more expected bytes to deserialize")
+        }
+
         match self.serializer_type {
             Fixed::H256 | Fixed::H160 => panic!("received u32 when deserializing H256,H160"),
             Fixed::U256 => {
-                let value = (self.content[self.offset as usize] as u32)
-                    + ((self.content[(self.offset + self.offset_sign) as usize] as u32) << 8)
-                    + ((self.content[(self.offset + 2 * self.offset_sign) as usize] as u32) << 16)
-                    + ((self.content[(self.offset + 3 * self.offset_sign) as usize] as u32) << 24);
+                self.remaining_bytes -= 4;
+                let mut value = 0u32;
+                for byte_index in 0..4 {
+                    let index = (self.offset + byte_index * self.offset_sign) as usize;
+                    value += (self.content[index] as u32) << (8 * byte_index);
+                }
                 self.offset += 4 * self.offset_sign;
                 visitor.visit_u32(value)
             }
@@ -108,17 +124,19 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
     }
 
     fn deserialize_u64<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        if self.remaining_bytes < 8 {
+            panic!("received u8 when there are no more expected bytes to deserialize")
+        }
+
         match self.serializer_type {
             Fixed::H256 | Fixed::H160 => panic!("received u64 when deserializing H256,H160"),
             Fixed::U256 => {
-                let value = (self.content[self.offset as usize] as u64)
-                    + ((self.content[(self.offset + self.offset_sign) as usize] as u64) << 8)
-                    + ((self.content[(self.offset + 2 * self.offset_sign) as usize] as u64) << 16)
-                    + ((self.content[(self.offset + 3 * self.offset_sign) as usize] as u64) << 24)
-                    + ((self.content[(self.offset + 4 * self.offset_sign) as usize] as u64) << 32)
-                    + ((self.content[(self.offset + 5 * self.offset_sign) as usize] as u64) << 40)
-                    + ((self.content[(self.offset + 6 * self.offset_sign) as usize] as u64) << 48)
-                    + ((self.content[(self.offset + 7 * self.offset_sign) as usize] as u64) << 56);
+                self.remaining_bytes -= 8;
+                let mut value = 0u64;
+                for byte_index in 0..8 {
+                    let index = (self.offset + byte_index * self.offset_sign) as usize;
+                    value += (self.content[index] as u64) << (8 * byte_index);
+                }
                 self.offset += 8 * self.offset_sign;
                 visitor.visit_u64(value)
             }
@@ -175,7 +193,7 @@ impl<'de> de::Deserializer<'de> for &mut EthFixedDeserializer {
 
 struct EthTupleAccess<'a> {
     count: usize,
-    len: usize,
+    remaining_bytes: usize,
     de: &'a mut EthFixedDeserializer,
 }
 
@@ -183,7 +201,7 @@ impl<'a> EthTupleAccess<'a> {
     pub fn new(de: &'a mut EthFixedDeserializer) -> Self {
         EthTupleAccess {
             count: 0,
-            len: de.len,
+            remaining_bytes: de.remaining_bytes,
             de: de,
         }
     }
@@ -196,7 +214,7 @@ impl<'de, 'a> de::SeqAccess<'de> for EthTupleAccess<'a> {
         &mut self,
         seed: T,
     ) -> Result<Option<T::Value>> {
-        if self.count >= self.len {
+        if self.count >= self.remaining_bytes {
             return Ok(None);
         } else {
             self.count += 1;
@@ -213,14 +231,14 @@ pub struct EthFixedAccess {
 
 impl EthFixedAccess {
     pub fn new(content: Vec<u8>, serializer_type: Fixed) -> Self {
-        let (len, offset, offset_sign) = match serializer_type {
+        let (remaining_bytes, offset, offset_sign) = match serializer_type {
             Fixed::H256 => (32, 0, 1),
             Fixed::H160 => (20, 12, 1),
-            Fixed::U256 => (4, 31, -1),
+            Fixed::U256 => (32, 31, -1),
         };
 
         assert_eq!(
-            content.len() >= 32,
+            content.len() == 32,
             true,
             "the expected number of bytes is 32"
         );
@@ -229,7 +247,7 @@ impl EthFixedAccess {
             count: 0,
             len: 1,
             de: EthFixedDeserializer {
-                len,
+                remaining_bytes,
                 offset,
                 offset_sign,
                 serializer_type,

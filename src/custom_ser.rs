@@ -117,13 +117,10 @@ impl<'a> ser::Serializer for &'a mut BasicEthSerializer {
         match self.serializer_type {
             Fixed::H256 | Fixed::H160 => panic!("received u32 when serializing H256,H160"),
             Fixed::U256 => {
-                self.content[self.offset as usize] = (value & 0x00ff) as u8;
-                self.content[(self.offset + self.offset_sign) as usize] =
-                    ((value >> 8) & 0x00ff) as u8;
-                self.content[(self.offset + 2 * self.offset_sign) as usize] =
-                    ((value >> 16) & 0x00ff) as u8;
-                self.content[(self.offset + 3 * self.offset_sign) as usize] =
-                    ((value >> 24) & 0x00ff) as u8;
+                for byte_index in 0..4 {
+                    let index = (self.offset + byte_index * self.offset_sign) as usize;
+                    self.content[index] = ((value >> (8 * byte_index)) & 0x00ff) as u8;
+                }
                 self.offset += 4 * self.offset_sign;
                 Ok(())
             }
@@ -134,21 +131,10 @@ impl<'a> ser::Serializer for &'a mut BasicEthSerializer {
         match self.serializer_type {
             Fixed::H256 | Fixed::H160 => panic!("received u64 when serializing H256,H160"),
             Fixed::U256 => {
-                self.content[self.offset as usize] = (value & 0x00ff) as u8;
-                self.content[(self.offset + self.offset_sign) as usize] =
-                    ((value >> 8) & 0x00ff) as u8;
-                self.content[(self.offset + 2 * self.offset_sign) as usize] =
-                    ((value >> 16) & 0x00ff) as u8;
-                self.content[(self.offset + 3 * self.offset_sign) as usize] =
-                    ((value >> 24) & 0x00ff) as u8;
-                self.content[(self.offset + 4 * self.offset_sign) as usize] =
-                    ((value >> 32) & 0x00ff) as u8;
-                self.content[(self.offset + 5 * self.offset_sign) as usize] =
-                    ((value >> 40) & 0x00ff) as u8;
-                self.content[(self.offset + 6 * self.offset_sign) as usize] =
-                    ((value >> 48) & 0x00ff) as u8;
-                self.content[(self.offset + 7 * self.offset_sign) as usize] =
-                    ((value >> 56) & 0x00ff) as u8;
+                for byte_index in 0..8 {
+                    let index = (self.offset + byte_index * self.offset_sign) as usize;
+                    self.content[index] = ((value >> (8 * byte_index)) & 0x00ff) as u8;
+                }
                 self.offset += 8 * self.offset_sign;
                 Ok(())
             }
